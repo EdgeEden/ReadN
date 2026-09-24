@@ -1,0 +1,65 @@
+import 'package:flutter/material.dart';
+import 'package:pdfrx/pdfrx.dart';
+import 'package:provider/provider.dart';
+
+import 'providers/annotation_provider.dart';
+import 'providers/document_provider.dart';
+import 'providers/reader_settings_provider.dart';
+import 'services/api_service.dart';
+import 'services/storage_service.dart';
+import 'theme/app_theme.dart';
+import 'views/bookshelf/bookshelf_view.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize pdfrx PDFium engine
+  await pdfrxFlutterInitialize();
+
+  // Initialize storage service
+  final storageService = await StorageService.init();
+  final apiService = ApiService(storageService: storageService);
+
+  runApp(
+    MultiProvider(
+      providers: [
+        Provider<StorageService>.value(value: storageService),
+        Provider<ApiService>.value(value: apiService),
+        ChangeNotifierProvider<DocumentProvider>(
+          create: (_) => DocumentProvider(
+            apiService: apiService,
+            storageService: storageService,
+          ),
+        ),
+        ChangeNotifierProvider<AnnotationProvider>(
+          create: (_) => AnnotationProvider(
+            apiService: apiService,
+            storageService: storageService,
+          ),
+        ),
+        ChangeNotifierProvider<ReaderSettingsProvider>(
+          create: (_) => ReaderSettingsProvider(
+            storageService: storageService,
+          ),
+        ),
+      ],
+      child: const ReadNApp(),
+    ),
+  );
+}
+
+class ReadNApp extends StatelessWidget {
+  const ReadNApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'ReadN - 云端多端 PDF 阅读器',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
+      themeMode: ThemeMode.system,
+      home: const BookshelfView(),
+    );
+  }
+}
