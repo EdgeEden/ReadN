@@ -125,7 +125,14 @@ async def test_full_backend_flow():
         assert status_res.status_code == 200
         assert status_res.json()["doc_id"] == doc_id
 
-        # 10. Clean up / Delete Document
+        # 10. Test OCR Revert endpoint
+        revert_res = await client.post(f"/api/documents/{doc_id}/ocr/revert", json={"page_scope": "all"})
+        assert revert_res.status_code == 200
+        reverted_doc = revert_res.json()
+        assert reverted_doc["id"] == doc_id
+        assert reverted_doc["ocr_status"] == "none"
+
+        # 11. Clean up / Delete Document
         res = await client.delete(f"/api/documents/{doc_id}")
         assert res.status_code == 204
 

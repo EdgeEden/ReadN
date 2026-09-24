@@ -182,9 +182,41 @@ class DocumentProvider extends ChangeNotifier {
     }
   }
 
-  Future<bool> triggerOcr(String docId, {String languages = "chi_sim+eng+equ"}) async {
+  Future<bool> triggerOcr(
+    String docId, {
+    String engine = "adobe",
+    String? adobeClientId,
+    String? adobeClientSecret,
+    String adobeLocale = "zh-CN",
+    String adobeType = "searchable_image_exact",
+    String? apiToken,
+    String? apiUrl,
+    String? modelName,
+    String pageScope = "all",
+    List<int>? targetPages,
+    String languages = "chi_sim+eng+equ",
+    bool useDocOrientationClassify = false,
+    bool useDocUnwarping = false,
+    bool useChartRecognition = false,
+  }) async {
     try {
-      await apiService.startOcr(docId, languages: languages);
+      await apiService.startOcr(
+        docId,
+        engine: engine,
+        adobeClientId: adobeClientId,
+        adobeClientSecret: adobeClientSecret,
+        adobeLocale: adobeLocale,
+        adobeType: adobeType,
+        apiToken: apiToken,
+        apiUrl: apiUrl,
+        modelName: modelName,
+        pageScope: pageScope,
+        targetPages: targetPages,
+        languages: languages,
+        useDocOrientationClassify: useDocOrientationClassify,
+        useDocUnwarping: useDocUnwarping,
+        useChartRecognition: useChartRecognition,
+      );
       final index = _documents.indexWhere((d) => d.id == docId);
       if (index != -1) {
         _documents[index] = _documents[index].copyWith(ocrStatus: "processing");
@@ -220,6 +252,52 @@ class DocumentProvider extends ChangeNotifier {
       return status;
     } catch (e) {
       return {'status': 'failed', 'error': e.toString()};
+    }
+  }
+
+  Future<bool> revertOcr(
+    String docId, {
+    String pageScope = "current",
+    List<int>? targetPages,
+  }) async {
+    try {
+      final updatedDoc = await apiService.revertOcr(
+        docId,
+        pageScope: pageScope,
+        targetPages: targetPages,
+      );
+      final index = _documents.indexWhere((d) => d.id == docId);
+      if (index != -1) {
+        _documents[index] = updatedDoc;
+      }
+      if (_activeDocument?.id == docId) {
+        _activeDocument = updatedDoc;
+      }
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _errorMessage = '恢复原始文字层失败: $e';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>> getMarkdown(String docId) async {
+    try {
+      return await apiService.getMarkdown(docId);
+    } catch (e) {
+      return {'doc_id': docId, 'has_markdown': false, 'markdown': '', 'error': e.toString()};
+    }
+  }
+
+  Future<bool> saveMarkdown(String docId, String markdown) async {
+    try {
+      await apiService.saveMarkdown(docId, markdown);
+      return true;
+    } catch (e) {
+      _errorMessage = '保存 Markdown 失败: $e';
+      notifyListeners();
+      return false;
     }
   }
 }

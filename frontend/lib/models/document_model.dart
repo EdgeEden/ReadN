@@ -11,6 +11,7 @@ class DocumentModel {
   final DateTime updatedAt;
   final int annotationCount;
   final bool hasTextLayer;
+  final bool hasMarkdown;
   final String ocrStatus;
 
   DocumentModel({
@@ -24,6 +25,7 @@ class DocumentModel {
     required this.updatedAt,
     this.annotationCount = 0,
     this.hasTextLayer = true,
+    this.hasMarkdown = false,
     this.ocrStatus = "none",
   });
 
@@ -39,6 +41,7 @@ class DocumentModel {
       updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? '') ?? DateTime.now(),
       annotationCount: (json['annotation_count'] as num?)?.toInt() ?? 0,
       hasTextLayer: (json['has_text_layer'] as bool?) ?? true,
+      hasMarkdown: (json['has_markdown'] as bool?) ?? false,
       ocrStatus: (json['ocr_status'] as String?) ?? "none",
     );
   }
@@ -55,6 +58,7 @@ class DocumentModel {
       'updated_at': updatedAt.toIso8601String(),
       'annotation_count': annotationCount,
       'has_text_layer': hasTextLayer,
+      'has_markdown': hasMarkdown,
       'ocr_status': ocrStatus,
     };
   }
@@ -70,6 +74,7 @@ class DocumentModel {
     DateTime? updatedAt,
     int? annotationCount,
     bool? hasTextLayer,
+    bool? hasMarkdown,
     String? ocrStatus,
   }) {
     return DocumentModel(
@@ -83,6 +88,7 @@ class DocumentModel {
       updatedAt: updatedAt ?? this.updatedAt,
       annotationCount: annotationCount ?? this.annotationCount,
       hasTextLayer: hasTextLayer ?? this.hasTextLayer,
+      hasMarkdown: hasMarkdown ?? this.hasMarkdown,
       ocrStatus: ocrStatus ?? this.ocrStatus,
     );
   }

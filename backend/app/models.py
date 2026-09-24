@@ -114,6 +114,7 @@ class DocumentResponse(BaseModel):
     file_size: int
     page_count: int
     has_text_layer: bool = True
+    has_markdown: bool = False
     ocr_status: Optional[str] = "none"
     checksum: Optional[str] = None
     created_at: datetime
@@ -125,8 +126,32 @@ class DocumentUpdate(BaseModel):
     title: Optional[str] = None
 
 
+class MarkdownResponse(BaseModel):
+    doc_id: str
+    has_markdown: bool
+    markdown: str = ""
+    page_count: int = 0
+
+
+class MarkdownUpdateRequest(BaseModel):
+    markdown: str
+
+
 class OcrRequest(BaseModel):
+    engine: str = "adobe"  # "adobe" | "paddleocr_vl" | "rapidocr"
+    adobe_client_id: Optional[str] = None
+    adobe_client_secret: Optional[str] = None
+    adobe_locale: Optional[str] = "zh-CN"
+    adobe_type: Optional[str] = "searchable_image_exact"  # "searchable_image_exact" | "searchable_image"
+    api_token: Optional[str] = "REDACTED_BAIDU_TOKEN"
+    api_url: Optional[str] = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+    model_name: Optional[str] = "PaddleOCR-VL-1.6"
+    page_scope: str = "all"  # "all" | "current" | "custom"
+    target_pages: Optional[List[int]] = None  # 1-indexed list of pages, e.g. [1, 2, 5]
     languages: str = "chi_sim+eng+equ"  # Support Simplified Chinese, English, Math Equations
+    use_doc_orientation_classify: bool = False
+    use_doc_unwarping: bool = False
+    use_chart_recognition: bool = False
 
 
 class OcrStatusResponse(BaseModel):
@@ -137,4 +162,11 @@ class OcrStatusResponse(BaseModel):
     total_pages: int = 0
     message: str = ""
     error: Optional[str] = None
+
+
+class OcrRevertRequest(BaseModel):
+    page_scope: str = "current"  # "current" | "all" | "custom"
+    target_pages: Optional[List[int]] = None  # 1-indexed list of pages to revert, e.g. [1, 3]
+
+
 

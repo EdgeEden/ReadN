@@ -13,11 +13,13 @@ import 'views/bookshelf/bookshelf_view.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Initialize pdfrx PDFium engine
-  await pdfrxFlutterInitialize();
+  // Parallelize pdfrx and storage service initialization to accelerate startup
+  final initResults = await Future.wait([
+    pdfrxFlutterInitialize(),
+    StorageService.init(),
+  ]);
 
-  // Initialize storage service
-  final storageService = await StorageService.init();
+  final storageService = initResults[1] as StorageService;
   final apiService = ApiService(storageService: storageService);
 
   runApp(

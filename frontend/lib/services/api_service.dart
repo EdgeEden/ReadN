@@ -190,11 +190,43 @@ class ApiService {
   }
 
   // OCR Dual-Layer PDF Conversion
-  Future<Map<String, dynamic>> startOcr(String docId, {String languages = "chi_sim+eng+equ"}) async {
+  Future<Map<String, dynamic>> startOcr(
+    String docId, {
+    String engine = "adobe",
+    String? adobeClientId,
+    String? adobeClientSecret,
+    String adobeLocale = "zh-CN",
+    String adobeType = "searchable_image_exact",
+    String? apiToken,
+    String? apiUrl,
+    String? modelName,
+    String pageScope = "all",
+    List<int>? targetPages,
+    String languages = "chi_sim+eng+equ",
+    bool useDocOrientationClassify = false,
+    bool useDocUnwarping = false,
+    bool useChartRecognition = false,
+  }) async {
+    final payload = {
+      'engine': engine,
+      'adobe_client_id': adobeClientId,
+      'adobe_client_secret': adobeClientSecret,
+      'adobe_locale': adobeLocale,
+      'adobe_type': adobeType,
+      'api_token': apiToken,
+      'api_url': apiUrl,
+      'model_name': modelName,
+      'page_scope': pageScope,
+      'target_pages': targetPages,
+      'languages': languages,
+      'use_doc_orientation_classify': useDocOrientationClassify,
+      'use_doc_unwarping': useDocUnwarping,
+      'use_chart_recognition': useChartRecognition,
+    };
     final res = await _client.post(
       _uri('/api/documents/$docId/ocr'),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'languages': languages}),
+      body: jsonEncode(payload),
     );
     if (res.statusCode == 200) {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
@@ -209,6 +241,52 @@ class ApiService {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     } else {
       throw Exception('Failed to get OCR status: ${res.statusCode}');
+    }
+  }
+
+  Future<DocumentModel> revertOcr(
+    String docId, {
+    String pageScope = "current",
+    List<int>? targetPages,
+  }) async {
+    final payload = {
+      'page_scope': pageScope,
+      'target_pages': targetPages,
+    };
+    final res = await _client.post(
+      _uri('/api/documents/$docId/ocr/revert'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 200) {
+      final json = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      return DocumentModel.fromJson(json);
+    } else {
+      throw Exception('Failed to revert OCR: ${res.statusCode} - ${res.body}');
+    }
+  }
+
+  // Markdown Document API
+  Future<Map<String, dynamic>> getMarkdown(String docId) async {
+    final res = await _client.get(_uri('/api/documents/$docId/markdown'));
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    } else {
+      throw Exception('Failed to get markdown: ${res.statusCode}');
+    }
+  }
+
+  Future<Map<String, dynamic>> saveMarkdown(String docId, String markdown) async {
+    final payload = {'markdown': markdown};
+    final res = await _client.put(
+      _uri('/api/documents/$docId/markdown'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    } else {
+      throw Exception('Failed to save markdown: ${res.statusCode}');
     }
   }
 }

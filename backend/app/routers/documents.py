@@ -20,8 +20,11 @@ from app.models import (
     AnnotationModel,
     OcrRequest,
     OcrStatusResponse,
+    OcrRevertRequest,
+    MarkdownResponse,
+    MarkdownUpdateRequest,
 )
-from app.services.ocr_service import detect_text_layer, ocr_job_manager
+from app.services.ocr_service import detect_text_layer, ocr_job_manager, ensure_orig_pdf_exists, revert_ocr_sync
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -49,6 +52,7 @@ async def upload_document(
             await out_file.write(content)
             
     checksum = sha256_hash.hexdigest()
+    ensure_orig_pdf_exists(file_path)
     
     # Extract page count and detect if document has text layer
     page_count = 0
@@ -82,6 +86,7 @@ async def upload_document(
         file_size=db_doc.file_size,
         page_count=db_doc.page_count,
         has_text_layer=bool(db_doc.has_text_layer),
+        has_markdown=(STORAGE_DIR / f"{db_doc.id}.md").exists(),
         ocr_status=db_doc.ocr_status,
         checksum=db_doc.checksum,
         created_at=db_doc.created_at,
@@ -114,6 +119,7 @@ async def list_documents(db: AsyncSession = Depends(get_db)):
                 file_size=doc.file_size,
                 page_count=doc.page_count,
                 has_text_layer=bool(doc.has_text_layer),
+                has_markdown=(STORAGE_DIR / f"{doc.id}.md").exists(),
                 ocr_status=doc.ocr_status,
                 checksum=doc.checksum,
                 created_at=doc.created_at,
@@ -148,6 +154,7 @@ async def get_document(doc_id: str, db: AsyncSession = Depends(get_db)):
         file_size=doc.file_size,
         page_count=doc.page_count,
         has_text_layer=bool(doc.has_text_layer),
+        has_markdown=(STORAGE_DIR / f"{doc.id}.md").exists(),
         ocr_status=doc.ocr_status,
         checksum=doc.checksum,
         created_at=doc.created_at,
@@ -184,17 +191,83 @@ async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # Remove physical file
-    file_path = STORAGE_DIR / f"{doc.id}.pdf"
-    if file_path.exists():
-        try:
-            os.remove(file_path)
-        except OSError:
-            pass
+    # Remove physical files
+    for suffix in [".pdf", ".orig.pdf", ".ocr.tmp.pdf", ".revert.tmp.pdf", ".md"]:
+        p = STORAGE_DIR / f"{doc.id}{suffix}"
+        if p.exists():
+            try:
+                os.remove(p)
+            except OSError:
+                pass
             
     await db.delete(doc)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{doc_id}/markdown", response_model=MarkdownResponse)
+async def get_document_markdown(doc_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Fetches the structured Markdown content parsed by Baidu PaddleOCR-VL.
+    """
+    stmt = select(DocumentModel).where(DocumentModel.id == doc_id)
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    md_path = STORAGE_DIR / f"{doc.id}.md"
+    if not md_path.exists():
+        return MarkdownResponse(
+            doc_id=doc_id,
+            has_markdown=False,
+            markdown="",
+            page_count=doc.page_count
+        )
+
+    try:
+        async with aiofiles.open(md_path, "r", encoding="utf-8") as f:
+            content = await f.read()
+        return MarkdownResponse(
+            doc_id=doc_id,
+            has_markdown=True,
+            markdown=content,
+            page_count=doc.page_count
+        )
+    except Exception as e:
+        return MarkdownResponse(
+            doc_id=doc_id,
+            has_markdown=False,
+            markdown="",
+            page_count=doc.page_count
+        )
+
+
+@router.put("/{doc_id}/markdown", response_model=MarkdownResponse)
+async def update_document_markdown(
+    doc_id: str,
+    update_req: MarkdownUpdateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Updates or saves user-edited Markdown text for the document.
+    """
+    stmt = select(DocumentModel).where(DocumentModel.id == doc_id)
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    md_path = STORAGE_DIR / f"{doc.id}.md"
+    async with aiofiles.open(md_path, "w", encoding="utf-8") as f:
+        await f.write(update_req.markdown)
+
+    return MarkdownResponse(
+        doc_id=doc_id,
+        has_markdown=True,
+        markdown=update_req.markdown,
+        page_count=doc.page_count
+    )
 
 
 @router.get("/{doc_id}/file")
@@ -253,18 +326,19 @@ async def trigger_document_ocr(
         ocr_job_manager.run_ocr_task(
             doc_id=doc_id,
             file_path=file_path,
-            languages=ocr_req.languages,
+            ocr_req=ocr_req,
             db_session_factory=AsyncSessionLocal
         )
     )
 
+    target_count = len(ocr_req.target_pages) if ocr_req.target_pages else doc.page_count
     return OcrStatusResponse(
         doc_id=doc_id,
         status="processing",
         progress=0.05,
         current_page=0,
-        total_pages=doc.page_count,
-        message="已启动双层可检索 PDF 转换任务..."
+        total_pages=target_count,
+        message=f"已启动 OCR 任务 ({'PaddleOCR-VL 在线API' if 'paddle' in ocr_req.engine.lower() else '本地 RapidOCR'})..."
     )
 
 
@@ -299,3 +373,62 @@ async def get_document_ocr_status(doc_id: str, db: AsyncSession = Depends(get_db
         message=job_status.get("message", ""),
         error=job_status.get("error")
     )
+
+
+@router.post("/{doc_id}/ocr/revert", response_model=DocumentResponse)
+async def revert_document_ocr(
+    doc_id: str,
+    revert_req: OcrRevertRequest = OcrRevertRequest(),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Reverts OCR on target pages (or entire document) and restores the original native text layer.
+    """
+    stmt = select(DocumentModel).where(DocumentModel.id == doc_id)
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = STORAGE_DIR / f"{doc.id}.pdf"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Document file missing on server")
+
+    orig_path = ensure_orig_pdf_exists(file_path)
+
+    # Execute revert in thread pool
+    loop = asyncio.get_running_loop()
+    target_pages = None if revert_req.page_scope == "all" else revert_req.target_pages
+    success = await loop.run_in_executor(
+        None,
+        revert_ocr_sync,
+        str(file_path),
+        str(orig_path),
+        target_pages
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to revert OCR on document")
+
+    # Recompute file metadata
+    sha256_hash = hashlib.sha256()
+    total_size = 0
+    async with aiofiles.open(file_path, "rb") as f:
+        while chunk := await f.read(65536):
+            total_size += len(chunk)
+            sha256_hash.update(chunk)
+    checksum = sha256_hash.hexdigest()
+
+    has_text = detect_text_layer(str(file_path))
+    doc.has_text_layer = 1 if has_text else 0
+    doc.file_size = total_size
+    doc.checksum = checksum
+
+    if revert_req.page_scope == "all" or not target_pages:
+        doc.ocr_status = "none"
+        ocr_job_manager.set_job_status(doc_id, "none", progress=0.0, message="已恢复初始文档")
+
+    await db.commit()
+    await db.refresh(doc)
+    return await get_document(doc_id, db)
+
