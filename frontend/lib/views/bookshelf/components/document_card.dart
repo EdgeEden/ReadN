@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../models/document_model.dart';
 import '../../../providers/document_provider.dart';
+import '../../../utils/file_exporter.dart';
 
 class DocumentCard extends StatefulWidget {
   final DocumentModel document;
@@ -22,6 +23,79 @@ class DocumentCard extends StatefulWidget {
 
 class _DocumentCardState extends State<DocumentCard> {
   bool _isHovered = false;
+
+  Future<void> _exportMarkdown(BuildContext context) async {
+    final docProvider = context.read<DocumentProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            const SizedBox(width: 10),
+            Text('正在读取 "${widget.document.title}" 的 OCR Markdown...'),
+          ],
+        ),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+
+    try {
+      final res = await docProvider.getMarkdown(widget.document.id);
+      final hasMd = res['has_markdown'] == true;
+      final mdText = (res['markdown'] as String?) ?? '';
+
+      if (!hasMd || mdText.trim().isEmpty) {
+        messenger.hideCurrentSnackBar();
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text('文档 "${widget.document.title}" 尚未生成 OCR Markdown，请先在阅读器中进行 OCR 转换。'),
+            backgroundColor: Colors.orange.shade800,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      final safeTitle = widget.document.title.replaceAll(RegExp(r'[\\/*?:"<>|]'), '_');
+      final fileName = safeTitle.endsWith('.md') ? safeTitle : '$safeTitle.md';
+
+      await exportFile(
+        fileName: fileName,
+        textContent: mdText,
+        mimeType: 'text/markdown;charset=utf-8',
+      );
+
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle_rounded, color: Colors.greenAccent, size: 18),
+              const SizedBox(width: 8),
+              Expanded(child: Text('已成功导出 "$fileName"')),
+            ],
+          ),
+          backgroundColor: const Color(0xFF1E293B),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('导出 Markdown 失败: $e'),
+          backgroundColor: Colors.red.shade800,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
 
   void _showRenameDialog(BuildContext context) {
     final controller = TextEditingController(text: widget.document.title);
@@ -191,10 +265,11 @@ class _DocumentCardState extends State<DocumentCard> {
                   onSelected: (val) {
                     if (val == 'rename') _showRenameDialog(context);
                     if (val == 'delete') _showDeleteDialog(context);
+                    if (val == 'export_md') _exportMarkdown(context);
                     if (val == 'ocr') {
                       context.read<DocumentProvider>().triggerOcr(widget.document.id);
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('已启动双层可检索 PDF (OCR) 转换任务，后台正在处理中...')),
+                        const SnackBar(content: Text('已启动 PaddleOCR-VL 识别任务，正在提取 Markdown...')),
                       );
                     }
                     if (val == 'copy_link') {
@@ -206,17 +281,27 @@ class _DocumentCardState extends State<DocumentCard> {
                     }
                   },
                   itemBuilder: (ctx) => [
-                    if (!widget.document.hasTextLayer)
+                    if (!widget.document.hasMarkdown)
                       const PopupMenuItem(
                         value: 'ocr',
                         child: Row(
                           children: [
-                            Icon(Icons.auto_fix_high_rounded, size: 16, color: Color(0xFF4F46E5)),
+                            Icon(Icons.auto_awesome_rounded, size: 16, color: Color(0xFF4F46E5)),
                             SizedBox(width: 8),
-                            Text('转换为双层PDF (OCR)'),
+                            Text('提取 Markdown (OCR)'),
                           ],
                         ),
                       ),
+                    const PopupMenuItem(
+                      value: 'export_md',
+                      child: Row(
+                        children: [
+                          Icon(Icons.download_rounded, size: 16, color: Color(0xFF4F46E5)),
+                          SizedBox(width: 8),
+                          Text('导出 OCR 的 MD'),
+                        ],
+                      ),
+                    ),
                     const PopupMenuItem(value: 'rename', child: Text('重命名')),
                     const PopupMenuItem(value: 'copy_link', child: Text('复制链接')),
                     const PopupMenuItem(value: 'delete', child: Text('删除文档', style: TextStyle(color: Colors.red))),
@@ -297,10 +382,11 @@ class _DocumentCardState extends State<DocumentCard> {
                       onSelected: (val) {
                         if (val == 'rename') _showRenameDialog(context);
                         if (val == 'delete') _showDeleteDialog(context);
+                        if (val == 'export_md') _exportMarkdown(context);
                         if (val == 'ocr') {
                           context.read<DocumentProvider>().triggerOcr(widget.document.id);
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('已启动双层可检索 PDF (OCR) 转换任务，后台正在处理中...')),
+                            const SnackBar(content: Text('已启动 PaddleOCR-VL 识别任务，正在提取 Markdown...')),
                           );
                         }
                         if (val == 'copy_link') {
@@ -312,17 +398,27 @@ class _DocumentCardState extends State<DocumentCard> {
                         }
                       },
                       itemBuilder: (ctx) => [
-                        if (!widget.document.hasTextLayer)
+                        if (!widget.document.hasMarkdown)
                           const PopupMenuItem(
                             value: 'ocr',
                             child: Row(
                               children: [
-                                Icon(Icons.auto_fix_high_rounded, size: 16, color: Color(0xFF4F46E5)),
+                                Icon(Icons.auto_awesome_rounded, size: 16, color: Color(0xFF4F46E5)),
                                 SizedBox(width: 8),
-                                Text('转换为双层PDF (OCR)'),
+                                Text('提取 Markdown (OCR)'),
                               ],
                             ),
                           ),
+                        const PopupMenuItem(
+                          value: 'export_md',
+                          child: Row(
+                            children: [
+                              Icon(Icons.download_rounded, size: 16, color: Color(0xFF4F46E5)),
+                              SizedBox(width: 8),
+                              Text('导出 OCR 的 MD'),
+                            ],
+                          ),
+                        ),
                         const PopupMenuItem(value: 'rename', child: Text('重命名')),
                         const PopupMenuItem(value: 'copy_link', child: Text('复制链接')),
                         const PopupMenuItem(value: 'delete', child: Text('删除', style: TextStyle(color: Colors.red))),

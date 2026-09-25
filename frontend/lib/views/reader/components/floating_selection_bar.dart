@@ -9,6 +9,7 @@ class FloatingSelectionBar extends StatelessWidget {
   final ValueChanged<String> onHighlight;
   final VoidCallback onAddNote;
   final VoidCallback onDismiss;
+  final VoidCallback? onAskAi;
   final ReadingMode? readingMode;
 
   const FloatingSelectionBar({
@@ -17,6 +18,7 @@ class FloatingSelectionBar extends StatelessWidget {
     required this.onHighlight,
     required this.onAddNote,
     required this.onDismiss,
+    this.onAskAi,
     this.readingMode,
   });
 
@@ -125,6 +127,25 @@ class FloatingSelectionBar extends StatelessWidget {
               height: 20,
               color: dividerColor,
             ),
+            // Ask AI button
+            if (onAskAi != null) ...[
+              Tooltip(
+                message: '向 AI 提问/解析/翻译此段内容',
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF8B5CF6),
+                    backgroundColor: const Color(0xFF8B5CF6).withValues(alpha: isDark ? 0.22 : 0.1),
+                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    visualDensity: VisualDensity.compact,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  ),
+                  onPressed: onAskAi,
+                  icon: const Icon(Icons.auto_awesome_rounded, size: 15, color: Color(0xFF8B5CF6)),
+                  label: const Text('问AI', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF8B5CF6))),
+                ),
+              ),
+              const SizedBox(width: 4),
+            ],
             // Add Note button
             Tooltip(
               message: '添加批注与心得',

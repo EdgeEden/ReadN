@@ -270,6 +270,34 @@ async def update_document_markdown(
     )
 
 
+@router.get("/{doc_id}/markdown/download")
+async def download_document_markdown(doc_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Downloads the OCR Markdown file directly as an attachment.
+    """
+    stmt = select(DocumentModel).where(DocumentModel.id == doc_id)
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    md_path = STORAGE_DIR / f"{doc.id}.md"
+    if not md_path.exists():
+        raise HTTPException(status_code=404, detail="Markdown file not found for this document")
+
+    safe_title = re.sub(r'[\\/*?:"<>|]', '_', doc.title)
+    download_filename = f"{safe_title}.md"
+    return FileResponse(
+        path=str(md_path),
+        media_type="text/markdown; charset=utf-8",
+        filename=download_filename,
+        headers={
+            "Content-Disposition": f'attachment; filename="{download_filename}"'
+        }
+    )
+
+
+
 @router.get("/{doc_id}/file")
 async def get_document_file(doc_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """
@@ -338,7 +366,7 @@ async def trigger_document_ocr(
         progress=0.05,
         current_page=0,
         total_pages=target_count,
-        message=f"已启动 OCR 任务 ({'PaddleOCR-VL 在线API' if 'paddle' in ocr_req.engine.lower() else '本地 RapidOCR'})..."
+        message="已启动百度 AI Studio PaddleOCR-VL 识别任务..."
     )
 
 
@@ -382,7 +410,7 @@ async def revert_document_ocr(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Reverts OCR on target pages (or entire document) and restores the original native text layer.
+    Clears OCR Markdown on target pages (or entire document).
     """
     stmt = select(DocumentModel).where(DocumentModel.id == doc_id)
     result = await db.execute(stmt)
@@ -394,8 +422,6 @@ async def revert_document_ocr(
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Document file missing on server")
 
-    orig_path = ensure_orig_pdf_exists(file_path)
-
     # Execute revert in thread pool
     loop = asyncio.get_running_loop()
     target_pages = None if revert_req.page_scope == "all" else revert_req.target_pages
@@ -403,32 +429,19 @@ async def revert_document_ocr(
         None,
         revert_ocr_sync,
         str(file_path),
-        str(orig_path),
         target_pages
     )
 
     if not success:
         raise HTTPException(status_code=500, detail="Failed to revert OCR on document")
 
-    # Recompute file metadata
-    sha256_hash = hashlib.sha256()
-    total_size = 0
-    async with aiofiles.open(file_path, "rb") as f:
-        while chunk := await f.read(65536):
-            total_size += len(chunk)
-            sha256_hash.update(chunk)
-    checksum = sha256_hash.hexdigest()
-
-    has_text = detect_text_layer(str(file_path))
-    doc.has_text_layer = 1 if has_text else 0
-    doc.file_size = total_size
-    doc.checksum = checksum
-
-    if revert_req.page_scope == "all" or not target_pages:
+    md_path = STORAGE_DIR / f"{doc.id}.md"
+    if not md_path.exists() or revert_req.page_scope == "all" or not target_pages:
         doc.ocr_status = "none"
-        ocr_job_manager.set_job_status(doc_id, "none", progress=0.0, message="已恢复初始文档")
+        ocr_job_manager.set_job_status(doc_id, "none", progress=0.0, message="已清除 OCR 结果")
 
     await db.commit()
     await db.refresh(doc)
     return await get_document(doc_id, db)
+
 

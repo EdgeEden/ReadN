@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:provider/provider.dart';
 
+import 'providers/ai_provider.dart';
 import 'providers/annotation_provider.dart';
 import 'providers/document_provider.dart';
 import 'providers/reader_settings_provider.dart';
+import 'services/ai_service.dart';
 import 'services/api_service.dart';
 import 'services/storage_service.dart';
 import 'theme/app_theme.dart';
@@ -21,12 +23,14 @@ void main() async {
 
   final storageService = initResults[1] as StorageService;
   final apiService = ApiService(storageService: storageService);
+  final aiService = AiService();
 
   runApp(
     MultiProvider(
       providers: [
         Provider<StorageService>.value(value: storageService),
         Provider<ApiService>.value(value: apiService),
+        Provider<AiService>.value(value: aiService),
         ChangeNotifierProvider<DocumentProvider>(
           create: (_) => DocumentProvider(
             apiService: apiService,
@@ -42,6 +46,12 @@ void main() async {
         ChangeNotifierProvider<ReaderSettingsProvider>(
           create: (_) => ReaderSettingsProvider(
             storageService: storageService,
+          ),
+        ),
+        ChangeNotifierProvider<AiProvider>(
+          create: (_) => AiProvider(
+            storageService: storageService,
+            aiService: aiService,
           ),
         ),
       ],

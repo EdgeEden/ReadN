@@ -109,6 +109,10 @@ async def update_annotation(
         anno.color_hex = payload.color_hex
     if payload.note_content is not None:
         anno.note_content = payload.note_content
+    if payload.selected_text is not None:
+        anno.selected_text = payload.selected_text
+    if payload.type is not None:
+        anno.type = payload.type
     if payload.rects is not None:
         anno.rects_json = json.dumps([r.model_dump() for r in payload.rects])
         

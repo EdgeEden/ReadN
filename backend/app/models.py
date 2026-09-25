@@ -83,6 +83,8 @@ class AnnotationCreate(BaseModel):
 class AnnotationUpdate(BaseModel):
     color_hex: Optional[str] = None
     note_content: Optional[str] = None
+    selected_text: Optional[str] = None
+    type: Optional[str] = None
     rects: Optional[List[Rect]] = None
 
 
@@ -138,20 +140,38 @@ class MarkdownUpdateRequest(BaseModel):
 
 
 class OcrRequest(BaseModel):
-    engine: str = "adobe"  # "adobe" | "paddleocr_vl" | "rapidocr"
-    adobe_client_id: Optional[str] = None
-    adobe_client_secret: Optional[str] = None
-    adobe_locale: Optional[str] = "zh-CN"
-    adobe_type: Optional[str] = "searchable_image_exact"  # "searchable_image_exact" | "searchable_image"
+    engine: str = "paddleocr_vl"  # Baidu AI Studio PaddleOCR-VL API
     api_token: Optional[str] = "REDACTED_BAIDU_TOKEN"
     api_url: Optional[str] = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
     model_name: Optional[str] = "PaddleOCR-VL-1.6"
     page_scope: str = "all"  # "all" | "current" | "custom"
     target_pages: Optional[List[int]] = None  # 1-indexed list of pages, e.g. [1, 2, 5]
-    languages: str = "chi_sim+eng+equ"  # Support Simplified Chinese, English, Math Equations
+    markdown_ignore_labels: Optional[List[str]] = [
+        "header",
+        "header_image",
+        "footer",
+        "footer_image",
+        "number",
+        "footnote",
+        "aside_text"
+    ]
     use_doc_orientation_classify: bool = False
     use_doc_unwarping: bool = False
+    use_layout_detection: bool = True
     use_chart_recognition: bool = False
+    use_seal_recognition: bool = True
+    use_ocr_for_image_block: bool = False
+    merge_tables: bool = True
+    relevel_titles: bool = True
+    layout_shape_mode: str = "auto"
+    prompt_label: str = "ocr"
+    repetition_penalty: float = 1.0
+    temperature: float = 0.0
+    top_p: float = 1.0
+    min_pixels: int = 147384
+    max_pixels: int = 2822400
+    layout_nms: bool = True
+    restructure_pages: bool = True
 
 
 class OcrStatusResponse(BaseModel):

@@ -24,18 +24,10 @@ class OcrDialog extends StatefulWidget {
 }
 
 class _OcrDialogState extends State<OcrDialog> {
-  String _selectedEngine = "adobe"; // "adobe" | "rapidocr" | "paddleocr_vl"
   String _pageScope = "current"; // "current" | "all" | "custom"
   late TextEditingController _customPagesController;
   
-  // Adobe configuration
-  late TextEditingController _adobeClientIdController;
-  late TextEditingController _adobeClientSecretController;
-  String _adobeLocale = "zh-CN";
-  final String _adobeType = "searchable_image_exact";
-  bool _showAdobeConfig = false;
-
-  // Baidu configuration
+  // Baidu PaddleOCR-VL configuration
   late TextEditingController _apiTokenController;
   bool _useDocOrientationClassify = false;
   bool _useDocUnwarping = false;
@@ -50,8 +42,6 @@ class _OcrDialogState extends State<OcrDialog> {
   String? _errorMessage;
   Timer? _pollTimer;
 
-  static const String _defaultAdobeClientId = "REDACTED_ADOBE_CLIENT_ID";
-  static const String _defaultAdobeClientSecret = "REDACTED_ADOBE_CLIENT_SECRET";
   static const String _defaultBaiduToken = "REDACTED_BAIDU_TOKEN";
 
   @override
@@ -65,14 +55,12 @@ class _OcrDialogState extends State<OcrDialog> {
     }
 
     _customPagesController = TextEditingController(text: "${widget.currentPage}");
-    _adobeClientIdController = TextEditingController(text: _defaultAdobeClientId);
-    _adobeClientSecretController = TextEditingController(text: _defaultAdobeClientSecret);
     _apiTokenController = TextEditingController(text: _defaultBaiduToken);
 
     if (widget.document.ocrStatus == "processing") {
       _isProcessing = true;
       _progress = 0.1;
-      _statusMessage = "OCR 处理中...";
+      _statusMessage = "OCR 解析中...";
       _startPolling();
     }
   }
@@ -81,8 +69,6 @@ class _OcrDialogState extends State<OcrDialog> {
   void dispose() {
     _pollTimer?.cancel();
     _customPagesController.dispose();
-    _adobeClientIdController.dispose();
-    _adobeClientSecretController.dispose();
     _apiTokenController.dispose();
     super.dispose();
   }
@@ -133,21 +119,12 @@ class _OcrDialogState extends State<OcrDialog> {
     final targets = _parseTargetPages();
     final targetCount = targets?.length ?? widget.document.pageCount;
 
-    String initialMsg = "正在启动 OCR 处理...";
-    if (_selectedEngine == "adobe") {
-      initialMsg = "正在连接 Adobe PDF Services 云端官方引擎...";
-    } else if (_selectedEngine == "paddleocr_vl") {
-      initialMsg = "正在连接百度 AI Studio PaddleOCR-VL API...";
-    } else {
-      initialMsg = "正在启动本地 RapidOCR 引擎...";
-    }
-
     setState(() {
       _isProcessing = true;
       _progress = 0.05;
       _totalTargetPages = targetCount;
       _currentRecognizedPage = 0;
-      _statusMessage = initialMsg;
+      _statusMessage = "正在连接百度 AI Studio PaddleOCR-VL API...";
       _errorMessage = null;
     });
 
@@ -156,15 +133,9 @@ class _OcrDialogState extends State<OcrDialog> {
     final docProvider = context.read<DocumentProvider>();
     final success = await docProvider.triggerOcr(
       widget.document.id,
-      engine: _selectedEngine,
-      adobeClientId: _adobeClientIdController.text.trim().isNotEmpty ? _adobeClientIdController.text.trim() : _defaultAdobeClientId,
-      adobeClientSecret: _adobeClientSecretController.text.trim().isNotEmpty ? _adobeClientSecretController.text.trim() : _defaultAdobeClientSecret,
-      adobeLocale: _adobeLocale,
-      adobeType: _adobeType,
       apiToken: _apiTokenController.text.trim().isNotEmpty ? _apiTokenController.text.trim() : _defaultBaiduToken,
       pageScope: _pageScope,
       targetPages: targets,
-      languages: "chi_sim+eng+equ",
       useDocOrientationClassify: _useDocOrientationClassify,
       useDocUnwarping: _useDocUnwarping,
       useChartRecognition: _useChartRecognition,
@@ -173,7 +144,7 @@ class _OcrDialogState extends State<OcrDialog> {
     if (!success) {
       setState(() {
         _isProcessing = false;
-        _errorMessage = docProvider.errorMessage ?? "启动 OCR 失败，请检查网络或配置状态";
+        _errorMessage = docProvider.errorMessage ?? "启动 OCR 失败，请检查网络或 API Token 配置";
       });
       return;
     }
@@ -199,7 +170,7 @@ class _OcrDialogState extends State<OcrDialog> {
         _progress = prog.clamp(0.05, 1.0);
         _currentRecognizedPage = currP;
         if (totalP > 0) _totalTargetPages = totalP;
-        _statusMessage = msg.isNotEmpty ? msg : "正在进行双层可检索文本层生成与合并...";
+        _statusMessage = msg.isNotEmpty ? msg : "正在解析排版、表格与数学公式，生成 Markdown 文档...";
       });
 
       if (status == "completed") {
@@ -207,7 +178,7 @@ class _OcrDialogState extends State<OcrDialog> {
         setState(() {
           _isProcessing = false;
           _progress = 1.0;
-          _statusMessage = "OCR 识别完成！已精准合并至原 PDF。";
+          _statusMessage = "OCR 解析完成！已就绪结构化 Markdown 文档。";
         });
         await Future.delayed(const Duration(milliseconds: 600));
         if (mounted) {
@@ -244,7 +215,7 @@ class _OcrDialogState extends State<OcrDialog> {
               child: const Icon(Icons.history_rounded, color: Colors.amber, size: 20),
             ),
             const SizedBox(width: 10),
-            const Text('恢复原本文字层', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const Text('清除 OCR 结果', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           ],
         ),
         content: Column(
@@ -253,10 +224,10 @@ class _OcrDialogState extends State<OcrDialog> {
           children: [
             Text(
               isCurrentScope
-                  ? '确定清除当前第 ${widget.currentPage} 页的 OCR 识别结果，并启用该页原本内嵌的文字与排版？'
+                  ? '确定清除当前第 ${widget.currentPage} 页的 OCR Markdown 识别结果？'
                   : _pageScope == "all"
-                      ? '确定清除全文档的所有 OCR 识别结果，恢复初始上传的原始 PDF 与原生文字层？'
-                      : '确定清除所选页面 (${_customPagesController.text}) 的 OCR 结果并恢复原本文字层？',
+                      ? '确定清除全文档的所有 OCR Markdown 识别结果？'
+                      : '确定清除所选页面 (${_customPagesController.text}) 的 OCR 结果？',
               style: const TextStyle(fontSize: 13, height: 1.5),
             ),
             const SizedBox(height: 12),
@@ -272,7 +243,7 @@ class _OcrDialogState extends State<OcrDialog> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '此操作将恢复原版文档文字层，并保留您已创建的批注。',
+                      '此操作将清除生成的 Markdown 内容，您已创建的批注与原生 PDF 保持不变。',
                       style: TextStyle(fontSize: 11, color: Colors.grey),
                     ),
                   ),
@@ -292,7 +263,7 @@ class _OcrDialogState extends State<OcrDialog> {
               foregroundColor: Colors.white,
             ),
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('确认恢复'),
+            child: const Text('确认清除'),
           ),
         ],
       ),
@@ -307,7 +278,7 @@ class _OcrDialogState extends State<OcrDialog> {
     setState(() {
       _isProcessing = true;
       _progress = 0.5;
-      _statusMessage = "正在清除 OCR 结果并启用原本文字层...";
+      _statusMessage = "正在清除 OCR 结果...";
       _errorMessage = null;
     });
 
@@ -332,8 +303,8 @@ class _OcrDialogState extends State<OcrDialog> {
               const SizedBox(width: 8),
               Text(
                 _pageScope == "current"
-                    ? '已清除第 ${widget.currentPage} 页 OCR 结果，已启用原本文字层'
-                    : '已清除 OCR 结果并启用原本文字层',
+                    ? '已清除第 ${widget.currentPage} 页 OCR Markdown'
+                    : '已清除 OCR Markdown 识别结果',
               ),
             ],
           ),
@@ -345,7 +316,7 @@ class _OcrDialogState extends State<OcrDialog> {
     } else {
       setState(() {
         _isProcessing = false;
-        _errorMessage = docProvider.errorMessage ?? "恢复原本文字层失败";
+        _errorMessage = docProvider.errorMessage ?? "清除 OCR 结果失败";
       });
     }
   }
@@ -359,7 +330,7 @@ class _OcrDialogState extends State<OcrDialog> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       backgroundColor: theme.cardTheme.color,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 580, maxHeight: 760),
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 720),
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
@@ -373,13 +344,13 @@ class _OcrDialogState extends State<OcrDialog> {
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
-                        colors: [Color(0xFFE11D48), Color(0xFF4F46E5)],
+                        colors: [Color(0xFF4F46E5), Color(0xFF0EA5E9)],
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                       ),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(Icons.auto_fix_high_rounded, color: Colors.white, size: 22),
+                    child: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 22),
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -387,12 +358,12 @@ class _OcrDialogState extends State<OcrDialog> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          '智能 OCR 双层可检索 PDF 构建',
+                          '百度 PaddleOCR-VL 智能解析',
                           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          'Adobe 官方云端 / 本地 RapidOCR • 精准划词选中',
+                          'AI Studio 官方多模态引擎 • 提取排版、LaTeX 公式与结构化 Markdown',
                           style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
                         ),
                       ],
@@ -413,59 +384,50 @@ class _OcrDialogState extends State<OcrDialog> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (!_isProcessing) ...[
-                        // 1. Engine Selection
-                        const Text(
-                          '选择 OCR 识别引擎',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 8),
-                        
-                        // 3 Engine Cards
-                        _buildEngineOption(
-                          title: 'Adobe PDF Services OCR',
-                          subtitle: 'Adobe 官方云端引擎 • 100% 原生双层 PDF 生成 • 高精度极稳定',
-                          tagText: '官方推荐',
-                          tagColor: const Color(0xFF10B981),
-                          isSelected: _selectedEngine == "adobe",
-                          icon: Icons.verified_rounded,
-                          color: const Color(0xFFE11D48),
-                          onTap: () => setState(() => _selectedEngine = "adobe"),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: _buildEngineOption(
-                                title: '本地 RapidOCR',
-                                subtitle: '离线 ONNX 引擎 (免 Token)',
-                                tagText: '离线免配置',
-                                tagColor: const Color(0xFF0D9488),
-                                isSelected: _selectedEngine == "rapidocr",
-                                icon: Icons.memory_rounded,
-                                color: const Color(0xFF0D9488),
-                                onTap: () => setState(() => _selectedEngine = "rapidocr"),
-                              ),
+                        // 1. Feature Highlights Banner
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: isDark
+                                  ? [const Color(0xFF312E81).withValues(alpha: 0.35), const Color(0xFF1E3A8A).withValues(alpha: 0.25)]
+                                  : [const Color(0xFFEEF2FF), const Color(0xFFE0F2FE)],
                             ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: _buildEngineOption(
-                                title: '百度 PaddleOCR-VL',
-                                subtitle: '解析为 Markdown (公式/表格/排版)',
-                                tagText: '生成MD',
-                                tagColor: const Color(0xFF6366F1),
-                                isSelected: _selectedEngine == "paddleocr_vl",
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.35 : 0.25),
+                            ),
+                          ),
+                          child: Column(
+                            children: [
+                              _buildFeatureRow(
                                 icon: Icons.description_outlined,
                                 color: const Color(0xFF6366F1),
-                                onTap: () => setState(() => _selectedEngine = "paddleocr_vl"),
+                                title: 'Markdown 结构化解析',
+                                desc: '自动提取多级标题、段落排版与 HTML 表格，支持 MD 视图阅读',
                               ),
-                            ),
-                          ],
+                              const SizedBox(height: 8),
+                              _buildFeatureRow(
+                                icon: Icons.functions_rounded,
+                                color: const Color(0xFF0EA5E9),
+                                title: 'LaTeX 数学公式识别',
+                                desc: '精准识别行内与独立数学公式，使用 KaTeX 高清排版渲染',
+                              ),
+                              const SizedBox(height: 8),
+                              _buildFeatureRow(
+                                icon: Icons.table_chart_outlined,
+                                color: const Color(0xFF10B981),
+                                title: '表格与版面多模态理解',
+                                desc: '保留多列排版与跨行表格结构，完美兼容复杂论文与技术文档',
+                              ),
+                            ],
+                          ),
                         ),
                         const SizedBox(height: 16),
 
                         // 2. Scope Selection (Full Doc, Current Page, Custom Range)
                         const Text(
-                          '识别与替换页面范围',
+                          '识别与解析页面范围',
                           style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 8),
@@ -474,7 +436,7 @@ class _OcrDialogState extends State<OcrDialog> {
                           runSpacing: 8,
                           children: [
                             ChoiceChip(
-                              label: Text('当前第 ${widget.currentPage} 页 (单页重构)'),
+                              label: Text('当前第 ${widget.currentPage} 页 (单页解析)'),
                               selected: _pageScope == "current",
                               avatar: const Icon(Icons.article_rounded, size: 16),
                               onSelected: (val) => setState(() => _pageScope = "current"),
@@ -503,246 +465,94 @@ class _OcrDialogState extends State<OcrDialog> {
                               labelText: '输入目标页码',
                               contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                              helperText: '仅对上述指定页码执行 OCR 并无缝替换进原 PDF，其余页面完全保留',
+                              helperText: '仅对指定页码执行 OCR 并合并进 Markdown，其余页面保留',
                             ),
                           ),
                         ],
                         const SizedBox(height: 16),
 
-                        // 3. Adobe OCR Settings (Collapsible)
-                        if (_selectedEngine == "adobe") ...[
-                          InkWell(
-                            borderRadius: BorderRadius.circular(8),
-                            onTap: () => setState(() => _showAdobeConfig = !_showAdobeConfig),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 4),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    _showAdobeConfig ? Icons.keyboard_arrow_down_rounded : Icons.keyboard_arrow_right_rounded,
-                                    size: 20,
-                                    color: const Color(0xFFE11D48),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  const Text(
-                                    'Adobe PDF Services 凭据与语言选项设置',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      color: Color(0xFFE11D48),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          if (_showAdobeConfig) ...[
-                            const SizedBox(height: 8),
-                            TextField(
-                              controller: _adobeClientIdController,
-                              decoration: InputDecoration(
-                                labelText: 'Adobe Client ID',
-                                hintText: '输入 Adobe PDF Services Client ID',
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                              ),
-                              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
-                            ),
-                            const SizedBox(height: 8),
-                            TextField(
-                              controller: _adobeClientSecretController,
-                              obscureText: true,
-                              decoration: InputDecoration(
-                                labelText: 'Adobe Client Secret',
-                                hintText: '输入 Adobe PDF Services Client Secret',
-                                suffixIcon: IconButton(
-                                  icon: const Icon(Icons.restore_rounded, size: 18),
-                                  tooltip: '重置为默认官方凭据',
-                                  onPressed: () => setState(() {
-                                    _adobeClientIdController.text = _defaultAdobeClientId;
-                                    _adobeClientSecretController.text = _defaultAdobeClientSecret;
-                                  }),
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                              ),
-                              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
-                            ),
-                            const SizedBox(height: 8),
-                            Row(
+                        // 3. Baidu API Settings (Collapsible)
+                        InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => setState(() => _showBaiduConfig = !_showBaiduConfig),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Row(
                               children: [
-                                const Text('文档语言: ', style: TextStyle(fontSize: 12)),
-                                const SizedBox(width: 8),
-                                DropdownButton<String>(
-                                  value: _adobeLocale,
-                                  isDense: true,
-                                  items: const [
-                                    DropdownMenuItem(value: 'zh-CN', child: Text('简体中文 (zh-CN)')),
-                                    DropdownMenuItem(value: 'en-US', child: Text('英语 (en-US)')),
-                                    DropdownMenuItem(value: 'zh-HK', child: Text('繁体中文 (zh-HK)')),
-                                    DropdownMenuItem(value: 'ja-JP', child: Text('日语 (ja-JP)')),
-                                    DropdownMenuItem(value: 'ko-KR', child: Text('韩语 (ko-KR)')),
-                                    DropdownMenuItem(value: 'de-DE', child: Text('德语 (de-DE)')),
-                                    DropdownMenuItem(value: 'fr-FR', child: Text('法语 (fr-FR)')),
-                                  ],
-                                  onChanged: (val) {
-                                    if (val != null) setState(() => _adobeLocale = val);
-                                  },
+                                Icon(
+                                  _showBaiduConfig ? Icons.keyboard_arrow_down_rounded : Icons.keyboard_arrow_right_rounded,
+                                  size: 20,
+                                  color: theme.colorScheme.primary,
                                 ),
-                              ],
-                            ),
-                          ],
-                          const SizedBox(height: 12),
-                        ],
-
-                        // 4. Baidu API Settings (Collapsible)
-                        if (_selectedEngine == "paddleocr_vl") ...[
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF6366F1).withValues(alpha: 0.08),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.2)),
-                            ),
-                            child: const Row(
-                              children: [
-                                Icon(Icons.info_outline_rounded, color: Color(0xFF6366F1), size: 16),
-                                SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    '百度 AI Studio PaddleOCR-VL 专注于将文档解析为结构化 Markdown（支持公式与复杂表格）。',
-                                    style: TextStyle(fontSize: 11, color: Color(0xFF4F46E5)),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          InkWell(
-                            borderRadius: BorderRadius.circular(8),
-                            onTap: () => setState(() => _showBaiduConfig = !_showBaiduConfig),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 4),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    _showBaiduConfig ? Icons.keyboard_arrow_down_rounded : Icons.keyboard_arrow_right_rounded,
-                                    size: 20,
+                                const SizedBox(width: 4),
+                                Text(
+                                  '百度 AI Studio API Token 与多模态参数设置',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
                                     color: theme.colorScheme.primary,
                                   ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    '百度 AI Studio API Token 与多模态参数设置',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      color: theme.colorScheme.primary,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          if (_showBaiduConfig) ...[
-                            const SizedBox(height: 8),
-                            TextField(
-                              controller: _apiTokenController,
-                              decoration: InputDecoration(
-                                labelText: 'PaddleOCR-VL Bearer Token',
-                                hintText: '输入 AI Studio Access Token',
-                                suffixIcon: IconButton(
-                                  icon: const Icon(Icons.restore_rounded, size: 18),
-                                  tooltip: '重置为默认官方 Token',
-                                  onPressed: () => setState(() => _apiTokenController.text = _defaultBaiduToken),
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                              ),
-                              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
-                            ),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 4,
-                              children: [
-                                SizedBox(
-                                  width: 170,
-                                  child: CheckboxListTile(
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
-                                    title: const Text('文本方向自动分类', style: TextStyle(fontSize: 12)),
-                                    value: _useDocOrientationClassify,
-                                    onChanged: (v) => setState(() => _useDocOrientationClassify = v ?? false),
-                                  ),
-                                ),
-                                SizedBox(
-                                  width: 170,
-                                  child: CheckboxListTile(
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
-                                    title: const Text('文档形变自动矫正', style: TextStyle(fontSize: 12)),
-                                    value: _useDocUnwarping,
-                                    onChanged: (v) => setState(() => _useDocUnwarping = v ?? false),
-                                  ),
-                                ),
-                                SizedBox(
-                                  width: 170,
-                                  child: CheckboxListTile(
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
-                                    title: const Text('图表区域识别', style: TextStyle(fontSize: 12)),
-                                    value: _useChartRecognition,
-                                    onChanged: (v) => setState(() => _useChartRecognition = v ?? false),
-                                  ),
                                 ),
                               ],
                             ),
-                          ],
-                          const SizedBox(height: 12),
-                        ],
-
-                        // Feature Assurance Card
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                            ),
                           ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(Icons.check_circle_rounded, color: Colors.green.shade400, size: 15),
-                                  const SizedBox(width: 6),
-                                  const Expanded(
-                                    child: Text(
-                                      '原扫描画质与公式排版 100% 视觉保真，零畸变',
-                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500),
-                                    ),
-                                  ),
-                                ],
+                        ),
+                        if (_showBaiduConfig) ...[
+                          const SizedBox(height: 8),
+                          TextField(
+                            controller: _apiTokenController,
+                            decoration: InputDecoration(
+                              labelText: 'PaddleOCR-VL Bearer Token',
+                              hintText: '输入 AI Studio Access Token',
+                              suffixIcon: IconButton(
+                                icon: const Icon(Icons.restore_rounded, size: 18),
+                                tooltip: '重置为默认官方 Token',
+                                onPressed: () => setState(() => _apiTokenController.text = _defaultBaiduToken),
                               ),
-                              const SizedBox(height: 4),
-                              Row(
-                                children: [
-                                  Icon(Icons.check_circle_rounded, color: Colors.green.shade400, size: 15),
-                                  const SizedBox(width: 6),
-                                  const Expanded(
-                                    child: Text(
-                                      '直接生成标准可检索双层 PDF，光标支持划词高亮与文本批注',
-                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500),
-                                    ),
-                                  ),
-                                ],
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            children: [
+                              SizedBox(
+                                width: 170,
+                                child: CheckboxListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const Text('文本方向自动分类', style: TextStyle(fontSize: 12)),
+                                  value: _useDocOrientationClassify,
+                                  onChanged: (v) => setState(() => _useDocOrientationClassify = v ?? false),
+                                ),
+                              ),
+                              SizedBox(
+                                width: 170,
+                                child: CheckboxListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const Text('文档形变自动矫正', style: TextStyle(fontSize: 12)),
+                                  value: _useDocUnwarping,
+                                  onChanged: (v) => setState(() => _useDocUnwarping = v ?? false),
+                                ),
+                              ),
+                              SizedBox(
+                                width: 170,
+                                child: CheckboxListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const Text('图表区域识别', style: TextStyle(fontSize: 12)),
+                                  value: _useChartRecognition,
+                                  onChanged: (v) => setState(() => _useChartRecognition = v ?? false),
+                                ),
                               ),
                             ],
                           ),
-                        ),
-                        const SizedBox(height: 10),
+                        ],
+                        const SizedBox(height: 12),
 
                         // Restore / Clear OCR Option Card
                         Container(
@@ -770,16 +580,16 @@ class _OcrDialogState extends State<OcrDialog> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     const Text(
-                                      '清除 OCR 结果 / 启用原本文字层',
+                                      '清除 OCR Markdown 识别结果',
                                       style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
                                       _pageScope == "current"
-                                          ? '清除当前第 ${widget.currentPage} 页的 OCR 图层，启用原本内嵌文字'
+                                          ? '清除当前第 ${widget.currentPage} 页的 OCR Markdown 结果'
                                           : _pageScope == "all"
-                                              ? '清除全文档 OCR 结果，恢复初始上传的原版 PDF'
-                                              : '清除所选范围的 OCR 结果并启用原本文字层',
+                                              ? '清除全文档的 OCR Markdown 内容'
+                                              : '清除所选范围的 OCR Markdown 结果',
                                       style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
                                     ),
                                   ],
@@ -795,7 +605,7 @@ class _OcrDialogState extends State<OcrDialog> {
                                 ),
                                 icon: const Icon(Icons.undo_rounded, size: 14),
                                 label: Text(
-                                  _pageScope == "current" ? '恢复当前页' : '恢复原生层',
+                                  _pageScope == "current" ? '清除本页' : '清除全部',
                                   style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
                                 ),
                                 onPressed: _confirmAndRevert,
@@ -838,7 +648,7 @@ class _OcrDialogState extends State<OcrDialog> {
                             minHeight: 8,
                             backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.15),
                             valueColor: AlwaysStoppedAnimation<Color>(
-                              _selectedEngine == "adobe" ? const Color(0xFFE11D48) : theme.colorScheme.primary,
+                              theme.colorScheme.primary,
                             ),
                           ),
                         ),
@@ -885,7 +695,7 @@ class _OcrDialogState extends State<OcrDialog> {
                       ),
                       icon: const Icon(Icons.history_rounded, size: 16),
                       label: Text(
-                        _pageScope == "current" ? '清除本页OCR' : '恢复原始文字',
+                        _pageScope == "current" ? '清除本页OCR' : '清除全部OCR',
                         style: const TextStyle(fontSize: 12),
                       ),
                       onPressed: _confirmAndRevert,
@@ -903,23 +713,17 @@ class _OcrDialogState extends State<OcrDialog> {
                       if (!_isProcessing)
                         ElevatedButton.icon(
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: _selectedEngine == "adobe"
-                                ? const Color(0xFFE11D48)
-                                : _selectedEngine == "paddleocr_vl"
-                                    ? const Color(0xFFD97706)
-                                    : const Color(0xFF0D9488),
+                            backgroundColor: const Color(0xFF4F46E5),
                             foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                           ),
-                          icon: const Icon(Icons.play_arrow_rounded),
+                          icon: const Icon(Icons.auto_awesome_rounded, size: 18),
                           label: Text(
-                            _selectedEngine == "paddleocr_vl"
-                                ? (_pageScope == "current"
-                                    ? '解析第 ${widget.currentPage} 页生成 Markdown'
-                                    : '解析全文并生成 Markdown 文档')
-                                : _pageScope == "current"
-                                    ? '识别并覆盖第 ${widget.currentPage} 页'
-                                    : '立即开始 OCR 识别',
+                            _pageScope == "current"
+                                ? '解析第 ${widget.currentPage} 页 (提取 Markdown)'
+                                : '开始 PaddleOCR-VL 全文解析',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
                           onPressed: _startOcr,
                         ),
@@ -934,97 +738,49 @@ class _OcrDialogState extends State<OcrDialog> {
     );
   }
 
-  Widget _buildEngineOption({
-    required String title,
-    required String subtitle,
-    String? tagText,
-    Color? tagColor,
-    required bool isSelected,
+  Widget _buildFeatureRow({
     required IconData icon,
     required Color color,
-    required VoidCallback onTap,
+    required String title,
+    required String desc,
   }) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? color.withValues(alpha: isDark ? 0.2 : 0.08)
-              : (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.black.withValues(alpha: 0.02)),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? color : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
-            width: isSelected ? 1.8 : 1.0,
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(5),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Icon(icon, size: 15, color: color),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+              ),
+              const SizedBox(height: 1),
+              Text(
+                desc,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey,
+                  height: 1.3,
+                ),
+              ),
+            ],
           ),
         ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: isSelected ? 0.25 : 0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(icon, size: 18, color: color),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        title,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          color: isSelected ? color : null,
-                        ),
-                      ),
-                      if (tagText != null) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                          decoration: BoxDecoration(
-                            color: (tagColor ?? color).withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(
-                              color: (tagColor ?? color).withValues(alpha: 0.4),
-                              width: 0.6,
-                            ),
-                          ),
-                          child: Text(
-                            tagText,
-                            style: TextStyle(
-                              fontSize: 9,
-                              fontWeight: FontWeight.bold,
-                              color: tagColor ?? color,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: Colors.grey.shade500,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+      ],
     );
   }
 }

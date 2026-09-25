@@ -70,7 +70,22 @@ class PdfAnnotation {
     required this.updatedAt,
   });
 
-  bool get isNote => type == "note" || noteContent.trim().isNotEmpty;
+  bool get isCard => type == "card";
+  bool get isNote => type == "note" || (type != "card" && noteContent.trim().isNotEmpty);
+  bool get isHighlight => type == "highlight" && !isNote;
+
+  String get displayTitle {
+    if (noteContent.trim().isNotEmpty) {
+      final lines = noteContent.trim().split('\n');
+      for (final line in lines) {
+        final clean = line.replaceAll(RegExp(r'^[#* \t-]+'), '').trim();
+        if (clean.isNotEmpty) return clean;
+      }
+    }
+    if (isCard) return '知识卡片 (P.$pageNumber)';
+    if (isNote) return '批注笔记 (P.$pageNumber)';
+    return '高亮批注 (P.$pageNumber)';
+  }
 
   factory PdfAnnotation.fromJson(Map<String, dynamic> json) {
     final rawRects = json['rects'] as List<dynamic>? ?? [];

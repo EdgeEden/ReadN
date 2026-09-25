@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../../../models/annotation_model.dart';
-import '../../../theme/app_theme.dart';
 
 class NoteEditorDialog extends StatefulWidget {
   final PdfAnnotation annotation;
@@ -20,13 +19,11 @@ class NoteEditorDialog extends StatefulWidget {
 
 class _NoteEditorDialogState extends State<NoteEditorDialog> {
   late TextEditingController _noteController;
-  late String _selectedColor;
 
   @override
   void initState() {
     super.initState();
     _noteController = TextEditingController(text: widget.annotation.noteContent);
-    _selectedColor = widget.annotation.colorHex;
   }
 
   @override
@@ -36,10 +33,22 @@ class _NoteEditorDialogState extends State<NoteEditorDialog> {
   }
 
   void _handleSave() {
+    final text = _noteController.text.trim();
+    if (text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('批注内容不能为空'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
     final updated = widget.annotation.copyWith(
-      colorHex: _selectedColor,
-      noteContent: _noteController.text.trim(),
-      type: _noteController.text.trim().isNotEmpty ? "note" : "highlight",
+      noteContent: text,
+      type: "note",
+      colorHex: widget.annotation.colorHex.isNotEmpty ? widget.annotation.colorHex : "#6366F1",
+      updatedAt: DateTime.now(),
     );
     widget.onSave(updated);
     Navigator.of(context).pop();
@@ -47,22 +56,40 @@ class _NoteEditorDialogState extends State<NoteEditorDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    const accentColor = Color(0xFF6366F1);
+
     return Dialog(
+      backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+      surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Container(
-        width: 440,
+        width: 460,
         padding: const EdgeInsets.all(20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // 1. Header
             Row(
               children: [
-                const Icon(Icons.sticky_note_2_rounded, color: Color(0xFF4F46E5), size: 22),
-                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: accentColor.withValues(alpha: isDark ? 0.25 : 0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.edit_note_rounded, color: accentColor, size: 20),
+                ),
+                const SizedBox(width: 10),
                 Text(
                   '第 ${widget.annotation.pageNumber} 页批注',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                    color: isDark ? const Color(0xFFF1F5F9) : const Color(0xFF0F172A),
+                  ),
                 ),
                 const Spacer(),
                 IconButton(
@@ -71,97 +98,105 @@ class _NoteEditorDialogState extends State<NoteEditorDialog> {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            // Quoted text
-            if (widget.annotation.selectedText.isNotEmpty)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppTheme.parseHexColor(_selectedColor, alpha: 0.18),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border(
-                    left: BorderSide(
-                      color: AppTheme.parseHexColor(_selectedColor),
-                      width: 4,
-                    ),
-                  ),
-                ),
-                child: Text(
-                  '“${widget.annotation.selectedText}”',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontStyle: FontStyle.italic,
-                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.9),
-                  ),
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
+            const SizedBox(height: 14),
+
+            // 2. Quoted text preview (引文 / 图标停泊锚点)
+            Container(
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                  width: 1,
                 ),
               ),
-            const SizedBox(height: 16),
-            // Color palette selector
-            const Text(
-              '荧光颜色',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: AppTheme.highlightColors.map((colorItem) {
-                final isSelected = _selectedColor.toLowerCase() == colorItem.hex.toLowerCase();
-                return GestureDetector(
-                  onTap: () => setState(() => _selectedColor = colorItem.hex),
-                  child: Container(
-                    margin: const EdgeInsets.only(right: 10),
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: colorItem.color,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: isSelected ? Colors.black87 : Colors.black12,
-                        width: isSelected ? 2.5 : 1.0,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(7),
+                child: IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Container(
+                        width: 4,
+                        color: accentColor,
                       ),
-                      boxShadow: isSelected
-                          ? [
-                              BoxShadow(
-                                color: colorItem.color.withValues(alpha: 0.5),
-                                blurRadius: 6,
-                                offset: const Offset(0, 2),
-                              )
-                            ]
-                          : [],
-                    ),
-                    child: isSelected
-                        ? const Icon(Icons.check_rounded, size: 16, color: Colors.black87)
-                        : null,
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Row(
+                                children: [
+                                  const Icon(Icons.location_on_rounded, size: 14, color: accentColor),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '引文与图标停泊锚点 (第 ${widget.annotation.pageNumber} 页):',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                widget.annotation.selectedText.trim().isNotEmpty
+                                    ? '“${widget.annotation.selectedText.trim()}”'
+                                    : '(未绑定特定引文，批注图标停泊于本页开头)',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontStyle: FontStyle.italic,
+                                  height: 1.45,
+                                  color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+                                ),
+                                maxLines: 4,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                );
-              }).toList(),
+                ),
+              ),
             ),
-            const SizedBox(height: 16),
-            // Note edit box
-            const Text(
-              '笔记 / 批注内容',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey),
+            const SizedBox(height: 14),
+
+            // 3. Note Text field
+            Text(
+              '批注笔记内容',
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.bold,
+                color: isDark ? Colors.grey.shade300 : Colors.grey.shade700,
+              ),
             ),
             const SizedBox(height: 8),
             TextField(
               controller: _noteController,
-              maxLines: 4,
+              maxLines: 5,
+              minLines: 3,
+              style: const TextStyle(fontSize: 13, height: 1.5),
               decoration: InputDecoration(
-                hintText: '写下您的想法、要点总结或批注...',
-                hintStyle: const TextStyle(fontSize: 13),
+                hintText: '写下您的批注与想法...',
+                hintStyle: const TextStyle(fontSize: 12.5, color: Colors.grey),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                 contentPadding: const EdgeInsets.all(12),
               ),
             ),
-            const SizedBox(height: 20),
-            // Actions
+            const SizedBox(height: 18),
+
+            // 4. Actions
             Row(
               children: [
                 IconButton(
-                  tooltip: '删除此高亮与批注',
-                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.red),
+                  tooltip: '删除此批注',
+                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
                   onPressed: () {
                     widget.onDelete();
                     Navigator.of(context).pop();
@@ -173,9 +208,15 @@ class _NoteEditorDialogState extends State<NoteEditorDialog> {
                   child: const Text('取消'),
                 ),
                 const SizedBox(width: 8),
-                ElevatedButton(
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: accentColor,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  ),
                   onPressed: _handleSave,
-                  child: const Text('保存批注'),
+                  icon: const Icon(Icons.save_rounded, size: 16),
+                  label: const Text('保存批注', style: TextStyle(fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
@@ -185,4 +226,3 @@ class _NoteEditorDialogState extends State<NoteEditorDialog> {
     );
   }
 }
-

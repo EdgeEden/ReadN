@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
@@ -14,6 +12,9 @@ import '../../../providers/document_provider.dart';
 import '../../../providers/reader_settings_provider.dart';
 import '../../../theme/app_theme.dart';
 import 'floating_selection_bar.dart';
+import 'knowledge_card_dialog.dart';
+import 'latex_interactive_view.dart';
+import 'markdown_html_support.dart';
 import 'note_editor_dialog.dart';
 
 class MarkdownPageChunk {
@@ -73,6 +74,7 @@ class MarkdownReaderView extends StatefulWidget {
   final ValueChanged<int>? onPageChanged;
   final VoidCallback onOpenOcr;
   final ValueChanged<String>? onMarkdownUpdated;
+  final void Function(String text, int pageNumber)? onAskAi;
 
   const MarkdownReaderView({
     super.key,
@@ -82,6 +84,7 @@ class MarkdownReaderView extends StatefulWidget {
     this.onPageChanged,
     required this.onOpenOcr,
     this.onMarkdownUpdated,
+    this.onAskAi,
   });
 
   @override
@@ -90,7 +93,6 @@ class MarkdownReaderView extends StatefulWidget {
 
 class MarkdownReaderViewState extends State<MarkdownReaderView> {
   final ScrollController _scrollController = ScrollController();
-  final TextEditingController _searchController = TextEditingController();
   final Map<int, GlobalKey> _cardKeys = {};
   final Uuid _uuid = const Uuid();
 
@@ -98,11 +100,6 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
   List<MarkdownHeadingItem> _headings = [];
   final Map<int, double> _pageHeights = {};
   final double _estimatedAverageHeight = 1000.0;
-
-  bool _isSearching = false;
-  String _searchQuery = "";
-  List<SearchMatchItem> _searchMatches = [];
-  int _totalSearchMatches = 0;
 
   // Active text selection state for floating menu
   MarkdownActiveSelection? _activeSelection;
@@ -112,7 +109,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
   int? _lastReportedPage;
   bool _hasExplicitPageMarkers = false;
 
-  // Custom Markdown extension set supporting LaTeX formulas and Highlight syntax
+  // Custom Markdown extension set supporting LaTeX formulas, Highlights, and HTML tags
   static final md.ExtensionSet _latexExtensionSet = md.ExtensionSet(
     md.ExtensionSet.gitHubFlavored.blockSyntaxes,
     <md.InlineSyntax>[
@@ -120,8 +117,25 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
       LatexBracketInlineSyntax(),
       LatexInlineSyntax(),
       LatexParenInlineSyntax(),
+      AnnotationBadgeInlineSyntax(),
       MarkdownHighlightInlineSyntax(),
       HtmlMarkInlineSyntax(),
+      HtmlUnderlineSyntax(),
+      HtmlSubscriptSyntax(),
+      HtmlSuperscriptSyntax(),
+      HtmlStrikeSyntax(),
+      HtmlBoldSyntax(),
+      HtmlItalicSyntax(),
+      HtmlFontSyntax(),
+      HtmlSpanSyntax(),
+      HtmlKbdSyntax(),
+      HtmlSmallBigSyntax(),
+      HtmlRubySyntax(),
+      HtmlAbbrSyntax(),
+      HtmlBreakSyntax(),
+      HtmlCenterSyntax(),
+      HtmlDetailsSyntax(),
+      HtmlTableSyntax(),
       ...md.ExtensionSet.gitHubFlavored.inlineSyntaxes,
     ],
   );
@@ -157,12 +171,12 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
   @override
   void dispose() {
     _scrollController.dispose();
-    _searchController.dispose();
     super.dispose();
   }
 
   void _processMarkdown(String rawMarkdown) {
-    _chunks = _parseMarkdownChunks(rawMarkdown);
+    final preprocessed = preprocessMarkdownHtml(rawMarkdown);
+    _chunks = _parseMarkdownChunks(preprocessed);
     _extractHeadings();
     _cardKeys.clear();
     for (final chunk in _chunks) {
@@ -426,10 +440,23 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
   void jumpToPage(int pageNumber) {
     if (_chunks.isEmpty) return;
 
+    // 1. Resolve targetIndex even when pages are skipped or merged across tables
     int targetIndex = _chunks.indexWhere((c) => c.pageNumber == pageNumber);
     if (targetIndex == -1) {
-      targetIndex = (pageNumber - 1).clamp(0, _chunks.length - 1);
+      // Find chunk with highest pageNumber <= requested pageNumber
+      for (int i = _chunks.length - 1; i >= 0; i--) {
+        if (_chunks[i].pageNumber <= pageNumber) {
+          targetIndex = i;
+          break;
+        }
+      }
     }
+    if (targetIndex == -1) {
+      targetIndex = 0;
+    }
+
+    final targetChunk = _chunks[targetIndex];
+    final actualPageNumber = targetChunk.pageNumber;
 
     _lastReportedPage = pageNumber;
     _isProgrammaticScrolling = true;
@@ -444,7 +471,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
       }
 
       // 1. If target card is already rendered in the DOM, align it right below the top bar!
-      final key = _cardKeys[pageNumber];
+      final key = _cardKeys[actualPageNumber];
       if (key?.currentContext != null) {
         Scrollable.ensureVisible(
           key!.currentContext!,
@@ -500,52 +527,16 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
       }
     }
 
-    attemptScroll(10);
-  }
-
-  void _onSearchChanged(String query) {
-    setState(() {
-      _searchQuery = query.trim().toLowerCase();
-      _searchMatches = [];
-      _totalSearchMatches = 0;
-
-      if (_searchQuery.isNotEmpty) {
-        for (int i = 0; i < _chunks.length; i++) {
-          final chunk = _chunks[i];
-          final text = chunk.content.toLowerCase();
-          int count = 0;
-          int matchIndex = text.indexOf(_searchQuery);
-          int firstMatchIndex = matchIndex;
-
-          while (matchIndex != -1) {
-            count++;
-            matchIndex = text.indexOf(_searchQuery, matchIndex + _searchQuery.length);
-          }
-
-          if (count > 0) {
-            _totalSearchMatches += count;
-            final snippetStart = (firstMatchIndex - 20).clamp(0, chunk.content.length);
-            final snippetEnd = (firstMatchIndex + _searchQuery.length + 30).clamp(0, chunk.content.length);
-            final snippet = chunk.content.substring(snippetStart, snippetEnd).replaceAll('\n', ' ');
-
-            _searchMatches.add(SearchMatchItem(
-              chunkIndex: i,
-              pageNumber: chunk.pageNumber,
-              matchCount: count,
-              previewSnippet: '...$snippet...',
-            ));
-          }
-        }
-      }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      attemptScroll(10);
     });
   }
 
-  void _createAnnotationFromSelection(
+  void _createHighlightFromSelection(
     String selectedText,
     String colorHex,
-    int pageNumber, {
-    String noteContent = "",
-  }) async {
+    int pageNumber,
+  ) async {
     if (selectedText.trim().isEmpty) return;
 
     final trimmedText = selectedText.trim();
@@ -588,12 +579,12 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     final newAnno = PdfAnnotation(
       id: _uuid.v4(),
       docId: widget.document.id,
-      type: noteContent.isNotEmpty ? "note" : "highlight",
+      type: "highlight",
       pageNumber: pageNumber,
       colorHex: colorHex,
       rects: const [],
       selectedText: trimmedText,
-      noteContent: noteContent,
+      noteContent: "",
       createdAt: DateTime.now(),
       updatedAt: DateTime.now(),
     );
@@ -601,9 +592,6 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     await annoProvider.addAnnotation(newAnno);
     if (mounted) {
       docProvider.updateAnnotationCount(widget.document.id, 1);
-    }
-
-    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Row(
@@ -619,7 +607,58 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  noteContent.isNotEmpty ? '已添加第 $pageNumber 页批注与笔记' : '已添加第 $pageNumber 页荧光划词高亮',
+                  '已添加第 $pageNumber 页荧光划词高亮',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    }
+  }
+
+  void _createNoteFromSelection(
+    String selectedText,
+    int pageNumber,
+    String noteContent,
+  ) async {
+    if (selectedText.trim().isEmpty || noteContent.trim().isEmpty) return;
+
+    final trimmedText = selectedText.trim();
+    final annoProvider = context.read<AnnotationProvider>();
+    final docProvider = context.read<DocumentProvider>();
+
+    final newAnno = PdfAnnotation(
+      id: _uuid.v4(),
+      docId: widget.document.id,
+      type: "note",
+      pageNumber: pageNumber,
+      colorHex: "#6366F1",
+      rects: const [],
+      selectedText: trimmedText,
+      noteContent: noteContent.trim(),
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    await annoProvider.addAnnotation(newAnno);
+    if (mounted) {
+      docProvider.updateAnnotationCount(widget.document.id, 1);
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.edit_note_rounded, color: Color(0xFF818CF8), size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '已添加第 $pageNumber 页批注笔记',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -642,7 +681,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
       docId: widget.document.id,
       type: "note",
       pageNumber: pageNumber,
-      colorHex: context.read<AnnotationProvider>().activeHighlightColor,
+      colorHex: "#6366F1",
       rects: const [],
       selectedText: selectedText.trim(),
       noteContent: "",
@@ -655,11 +694,10 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
       builder: (_) => NoteEditorDialog(
         annotation: tempAnno,
         onSave: (saved) {
-          _createAnnotationFromSelection(
+          _createNoteFromSelection(
             selectedText,
-            saved.colorHex,
             pageNumber,
-            noteContent: saved.noteContent,
+            saved.noteContent,
           );
         },
         onDelete: () {},
@@ -667,137 +705,237 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     );
   }
 
-  void _showHeadingsOutlineSheet() {
-    final settings = context.read<ReaderSettingsProvider>();
-    final theme = Theme.of(context);
-    final isDark = settings.readingMode == ReadingMode.dark;
-
-    showModalBottomSheet(
+  void _openCardDialog(PdfAnnotation card) {
+    showDialog(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      builder: (_) => KnowledgeCardDialog(
+        annotation: card,
+        pageNumber: card.pageNumber,
+        docId: widget.document.id,
+        onSave: (updated) {
+          context.read<AnnotationProvider>().updateAnnotationModel(updated);
+        },
+        onDelete: () {
+          context.read<AnnotationProvider>().deleteAnnotation(card.id);
+          context.read<DocumentProvider>().updateAnnotationCount(widget.document.id, -1);
+        },
+        onJumpToPage: (p) => jumpToPage(p),
       ),
-      backgroundColor: theme.cardTheme.color,
-      builder: (ctx) {
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-          constraints: const BoxConstraints(maxHeight: 520),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.primary.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Icon(Icons.list_alt_rounded, color: theme.colorScheme.primary, size: 20),
-                      ),
-                      const SizedBox(width: 10),
-                      const Text(
-                        '文档大纲 / 目录',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                  Text(
-                    '${_headings.length} 个章节标题',
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              const Divider(height: 1),
-              const SizedBox(height: 8),
-              if (_headings.isEmpty)
-                Expanded(
-                  child: Center(
-                    child: Text(
-                      '未检测到 H1 / H2 / H3 标题标记',
-                      style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
-                    ),
-                  ),
-                )
-              else
-                Expanded(
-                  child: ListView.separated(
-                    itemCount: _headings.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (ctx, idx) {
-                      final item = _headings[idx];
-
-                      return InkWell(
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: () {
-                          Navigator.of(ctx).pop();
-                          jumpToPage(item.pageNumber);
-                        },
-                        child: Padding(
-                          padding: EdgeInsets.only(
-                            left: (item.level - 1) * 16.0 + 8.0,
-                            right: 8.0,
-                            top: 10.0,
-                            bottom: 10.0,
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                item.level == 1
-                                    ? Icons.bookmark_rounded
-                                    : item.level == 2
-                                        ? Icons.label_important_rounded
-                                        : Icons.subdirectory_arrow_right_rounded,
-                                size: 16,
-                                color: item.level == 1
-                                    ? theme.colorScheme.primary
-                                    : (isDark ? Colors.grey.shade400 : Colors.grey.shade600),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  item.title,
-                                  style: TextStyle(
-                                    fontSize: item.level == 1 ? 14 : 13,
-                                    fontWeight: item.level <= 2 ? FontWeight.bold : FontWeight.normal,
-                                    color: theme.colorScheme.onSurface,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: theme.colorScheme.primary.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: Text(
-                                  'P.${item.pageNumber}',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: theme.colorScheme.primary,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-            ],
-          ),
-        );
-      },
     );
   }
+
+  void _openNoteDialog(PdfAnnotation note) {
+    showDialog(
+      context: context,
+      builder: (_) => NoteEditorDialog(
+        annotation: note,
+        onSave: (updated) {
+          context.read<AnnotationProvider>().updateAnnotationModel(updated);
+        },
+        onDelete: () {
+          context.read<AnnotationProvider>().deleteAnnotation(note.id);
+          context.read<DocumentProvider>().updateAnnotationCount(widget.document.id, -1);
+        },
+      ),
+    );
+  }
+
+  void _handleHighlightLatex(
+    String rawLatex,
+    String colorHex, {
+    required bool isDisplay,
+    required int pageNumber,
+  }) async {
+    final trimmedLatex = rawLatex.trim();
+    if (trimmedLatex.isEmpty) return;
+
+    final normalizedHex = colorHex.toUpperCase();
+    final tagPrefix = (normalizedHex == '#FDE047' || normalizedHex == 'FDE047')
+        ? '=='
+        : '==[$normalizedHex]';
+
+    final docProvider = context.read<DocumentProvider>();
+    final annoProvider = context.read<AnnotationProvider>();
+
+    int chunkIdx = _chunks.indexWhere((c) => c.pageNumber == pageNumber);
+    if (chunkIdx == -1 && _chunks.isNotEmpty) {
+      chunkIdx = 0;
+    }
+
+    if (chunkIdx != -1) {
+      final oldChunk = _chunks[chunkIdx];
+      String content = oldChunk.content;
+      bool modified = false;
+
+      final escaped = RegExp.escape(trimmedLatex);
+
+      // 1. Check if formula is already highlighted:
+      final alreadyHighlightedRegex = RegExp(
+        r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*(\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
+            escaped +
+            r'\s*(\$\$|\$|\\\]|\\\)|\n?```)\s*==',
+      );
+
+      if (alreadyHighlightedRegex.hasMatch(content)) {
+        content = content.replaceAllMapped(alreadyHighlightedRegex, (m) {
+          final openDelim = m.group(1) ?? (isDisplay ? r'$$' : r'$');
+          final closeDelim = m.group(2) ?? (isDisplay ? r'$$' : r'$');
+          return '$tagPrefix$openDelim$trimmedLatex$closeDelim==';
+        });
+        modified = true;
+      } else {
+        // 2. Plain formula matching
+        final plainRegex = RegExp(
+          r'(\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
+              escaped +
+              r'\s*(\$\$|\$|\\\]|\\\)|\n?```)',
+        );
+
+        if (plainRegex.hasMatch(content)) {
+          content = content.replaceFirstMapped(plainRegex, (m) {
+            final openDelim = m.group(1) ?? (isDisplay ? r'$$' : r'$');
+            final closeDelim = m.group(2) ?? (isDisplay ? r'$$' : r'$');
+            return '$tagPrefix$openDelim$trimmedLatex$closeDelim==';
+          });
+          modified = true;
+        } else if (content.contains(trimmedLatex)) {
+          content = content.replaceFirst(trimmedLatex, '$tagPrefix$trimmedLatex==');
+          modified = true;
+        }
+      }
+
+      if (modified) {
+        _chunks[chunkIdx] = MarkdownPageChunk(
+          pageNumber: oldChunk.pageNumber,
+          content: content,
+        );
+
+        final combinedMd = _recombineChunks(_chunks);
+        widget.onMarkdownUpdated?.call(combinedMd);
+
+        try {
+          await docProvider.saveMarkdown(widget.document.id, combinedMd);
+        } catch (e) {
+          debugPrint('Error saving markdown: $e');
+        }
+        if (mounted) setState(() {});
+      }
+    }
+
+    final newAnno = PdfAnnotation(
+      id: _uuid.v4(),
+      docId: widget.document.id,
+      type: "highlight",
+      pageNumber: pageNumber,
+      colorHex: colorHex,
+      rects: const [],
+      selectedText: isDisplay ? '\$\$$trimmedLatex\$\$' : '\$$trimmedLatex\$',
+      noteContent: "",
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    await annoProvider.addAnnotation(newAnno);
+    if (mounted) {
+      docProvider.updateAnnotationCount(widget.document.id, 1);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Container(
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(
+                  color: AppTheme.parseHexColor(colorHex),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('已高亮第 $pageNumber 页 LaTeX 公式: ${isDisplay ? "\$\$$trimmedLatex\$\$" : "\$$trimmedLatex\$"}'),
+              ),
+            ],
+          ),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    }
+  }
+
+  void _handleRemoveHighlightLatex(
+    String rawLatex, {
+    required bool isDisplay,
+    required int pageNumber,
+  }) async {
+    final trimmedLatex = rawLatex.trim();
+    if (trimmedLatex.isEmpty) return;
+
+    final docProvider = context.read<DocumentProvider>();
+
+    int chunkIdx = _chunks.indexWhere((c) => c.pageNumber == pageNumber);
+    if (chunkIdx == -1 && _chunks.isNotEmpty) {
+      chunkIdx = 0;
+    }
+
+    if (chunkIdx != -1) {
+      final oldChunk = _chunks[chunkIdx];
+      String content = oldChunk.content;
+      final escaped = RegExp.escape(trimmedLatex);
+
+      final highlightedRegex = RegExp(
+        r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*(\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
+            escaped +
+            r'\s*(\$\$|\$|\\\]|\\\)|\n?```)\s*==',
+      );
+
+      if (highlightedRegex.hasMatch(content)) {
+        content = content.replaceAllMapped(highlightedRegex, (m) {
+          final openDelim = m.group(1) ?? (isDisplay ? r'$$' : r'$');
+          final closeDelim = m.group(2) ?? (isDisplay ? r'$$' : r'$');
+          return '$openDelim$trimmedLatex$closeDelim';
+        });
+
+        _chunks[chunkIdx] = MarkdownPageChunk(
+          pageNumber: oldChunk.pageNumber,
+          content: content,
+        );
+
+        final combinedMd = _recombineChunks(_chunks);
+        widget.onMarkdownUpdated?.call(combinedMd);
+
+        try {
+          await docProvider.saveMarkdown(widget.document.id, combinedMd);
+        } catch (e) {
+          debugPrint('Error saving markdown: $e');
+        }
+        if (mounted) setState(() {});
+      }
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已清除公式荧光高亮'),
+          duration: Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _handleAddNoteForLatex(
+    String rawLatex, {
+    required bool isDisplay,
+    required int pageNumber,
+  }) {
+    final trimmedLatex = rawLatex.trim();
+    final formulaText = isDisplay ? '\$\$$trimmedLatex\$\$' : '\$$trimmedLatex\$';
+    _showNoteDialogForSelection(formulaText, pageNumber);
+  }
+
+
 
   Widget _buildMarkdownContextMenu(
     BuildContext context,
@@ -822,12 +960,16 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
           selectedText: selectedText,
           readingMode: context.read<ReaderSettingsProvider>().readingMode,
           onHighlight: (colorHex) {
-            _createAnnotationFromSelection(selectedText, colorHex, pageNumber);
+            _createHighlightFromSelection(selectedText, colorHex, pageNumber);
             selectableRegionState.hideToolbar();
           },
           onAddNote: () {
             selectableRegionState.hideToolbar();
             _showNoteDialogForSelection(selectedText, pageNumber);
+          },
+          onAskAi: () {
+            selectableRegionState.hideToolbar();
+            widget.onAskAi?.call(selectedText, pageNumber);
           },
           onDismiss: () {
             selectableRegionState.hideToolbar();
@@ -877,289 +1019,117 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
       backgroundColor: canvasBg,
       body: Stack(
         children: [
-          Column(
-            children: [
-              // Markdown Helper Sub-Toolbar
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF1E293B) : (isSepia ? const Color(0xFFEFE6CF) : const Color(0xFFF8FAFC)),
-                  border: Border(
-                    bottom: BorderSide(
-                      color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                      width: 0.8,
-                    ),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    // Outline / Table of Contents Button
-                    InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: _showHeadingsOutlineSheet,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: theme.cardTheme.color,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+          // Virtualized Page List View with accurate Scroll Notification Listener
+          _chunks.isEmpty
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            Icons.menu_book_rounded,
+                            size: 40,
+                            color: theme.colorScheme.primary,
                           ),
                         ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.menu_book_rounded, size: 16),
-                            const SizedBox(width: 6),
-                            Text(
-                              '目录 (${_headings.length})',
-                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-
-                    // Search Toggle Button
-                    InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: () => setState(() {
-                        _isSearching = !_isSearching;
-                        if (!_isSearching) {
-                          _searchController.clear();
-                          _onSearchChanged("");
-                        }
-                      }),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: _isSearching
-                              ? theme.colorScheme.primary.withValues(alpha: 0.15)
-                              : theme.cardTheme.color,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: _isSearching
-                                ? theme.colorScheme.primary
-                                : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                        const SizedBox(height: 16),
+                        Text(
+                          '尚未生成结构化 Markdown 文档',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: textColor,
                           ),
                         ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.search_rounded,
-                              size: 16,
-                              color: _isSearching ? theme.colorScheme.primary : null,
+                        const SizedBox(height: 8),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 420),
+                          child: Text(
+                            '使用百度 PaddleOCR-VL 智能云端解析，可提取全文多级标题、段落排版、LaTeX 数学公式与 HTML 表格。',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 12,
+                              height: 1.5,
+                              color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
                             ),
-                            const SizedBox(width: 6),
-                            Text(
-                              '全文检索',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                color: _isSearching ? theme.colorScheme.primary : null,
-                              ),
-                            ),
-                          ],
+                          ),
                         ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-
-                    // Page Count Status Pill
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.04),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        '共 ${_chunks.length} 页 • 虚拟流畅渲染',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-
-                    const Spacer(),
-
-                    // Copy Markdown Button
-                    IconButton(
-                      icon: const Icon(Icons.copy_rounded, size: 17),
-                      tooltip: '复制全文 Markdown',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () {
-                        Clipboard.setData(ClipboardData(text: widget.markdownContent));
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: const Text('Markdown 全文已复制到剪贴板'),
-                            duration: const Duration(seconds: 2),
-                            behavior: SnackBarBehavior.floating,
+                        const SizedBox(height: 20),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF4F46E5),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                           ),
+                          icon: const Icon(Icons.auto_awesome_rounded, size: 16),
+                          label: const Text('开始 OCR 智能解析', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                          onPressed: widget.onOpenOcr,
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : NotificationListener<ScrollNotification>(
+                  onNotification: _onScrollNotification,
+                  child: Listener(
+                    behavior: HitTestBehavior.translucent,
+                    onPointerDown: (event) {
+                      _pendingSelectionText = '';
+                      if (_activeSelection != null) {
+                        setState(() => _activeSelection = null);
+                      }
+                    },
+                    onPointerUp: (event) async {
+                      final renderBox = context.findRenderObject() as RenderBox?;
+                      final stackPos = renderBox != null
+                          ? renderBox.globalToLocal(event.position)
+                          : event.localPosition;
+                      await Future.delayed(const Duration(milliseconds: 50));
+                      if (!mounted) return;
+                      if (_pendingSelectionText.isNotEmpty) {
+                        setState(() {
+                          _activeSelection = MarkdownActiveSelection(
+                            text: _pendingSelectionText,
+                            pageNumber: _pendingSelectionPage,
+                            position: stackPos,
+                          );
+                        });
+                      }
+                    },
+                    child: ListView.builder(
+                      controller: _scrollController,
+                      // ignore: deprecated_member_use
+                      cacheExtent: 1200,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                      itemCount: _chunks.length,
+                      itemBuilder: (context, index) {
+                        final chunk = _chunks[index];
+
+                        return _buildPageCard(
+                          context: context,
+                          chunk: chunk,
+                          index: index,
+                          theme: theme,
+                          isDark: isDark,
+                          isSepia: isSepia,
+                          cardBg: cardBg,
+                          textColor: textColor,
+                          codeBg: codeBg,
+                          baseFontSize: baseFontSize,
+                          cardMaxWidth: cardMaxWidth,
                         );
                       },
                     ),
-
-                    // Trigger Re-OCR / Baidu Update
-                    IconButton(
-                      icon: const Icon(Icons.refresh_rounded, size: 18),
-                      tooltip: '重新解析或更新 Markdown (百度 API)',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: widget.onOpenOcr,
-                    ),
-                  ],
-                ),
-              ),
-
-              // Search Toolbar & Quick Match Jump List
-              if (_isSearching)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.search_rounded, size: 18, color: Colors.grey),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: TextField(
-                              controller: _searchController,
-                              autofocus: true,
-                              style: const TextStyle(fontSize: 13),
-                              decoration: const InputDecoration(
-                                hintText: r'搜索文档内容与公式 (如: 神经网络、定理、$$)...',
-                                isDense: true,
-                                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                border: InputBorder.none,
-                              ),
-                              onChanged: _onSearchChanged,
-                            ),
-                          ),
-                          if (_searchQuery.isNotEmpty) ...[
-                            Text(
-                              _totalSearchMatches > 0
-                                  ? '共 $_totalSearchMatches 处匹配 (${_searchMatches.length} 个页面)'
-                                  : '未找到匹配结果',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: _totalSearchMatches > 0 ? theme.colorScheme.primary : Colors.grey,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                          ],
-                          IconButton(
-                            icon: const Icon(Icons.close_rounded, size: 16),
-                            onPressed: () {
-                              _searchController.clear();
-                              _onSearchChanged("");
-                            },
-                          ),
-                        ],
-                      ),
-                      if (_searchMatches.isNotEmpty)
-                        Container(
-                          margin: const EdgeInsets.only(top: 8),
-                          height: 38,
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: _searchMatches.length,
-                            separatorBuilder: (_, _) => const SizedBox(width: 6),
-                            itemBuilder: (ctx, idx) {
-                              final match = _searchMatches[idx];
-                              return ActionChip(
-                                avatar: CircleAvatar(
-                                  radius: 9,
-                                  backgroundColor: theme.colorScheme.primary,
-                                  child: Text(
-                                    '${match.matchCount}',
-                                    style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                                label: Text('第 ${match.pageNumber} 页'),
-                                labelStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                                onPressed: () {
-                                  jumpToPage(match.pageNumber);
-                                },
-                              );
-                            },
-                          ),
-                        ),
-                    ],
                   ),
                 ),
-
-              // Virtualized Page List View with accurate Scroll Notification Listener
-              Expanded(
-                child: _chunks.isEmpty
-                    ? Center(
-                        child: Text(
-                          '暂无 Markdown 内容',
-                          style: TextStyle(color: Colors.grey.shade500),
-                        ),
-                      )
-                    : NotificationListener<ScrollNotification>(
-                        onNotification: _onScrollNotification,
-                        child: Listener(
-                          behavior: HitTestBehavior.translucent,
-                          onPointerDown: (event) {
-                            _pendingSelectionText = '';
-                            if (_activeSelection != null) {
-                              setState(() => _activeSelection = null);
-                            }
-                          },
-                          onPointerUp: (event) async {
-                            final renderBox = context.findRenderObject() as RenderBox?;
-                            final stackPos = renderBox != null
-                                ? renderBox.globalToLocal(event.position)
-                                : event.localPosition;
-                            await Future.delayed(const Duration(milliseconds: 50));
-                            if (!mounted) return;
-                            if (_pendingSelectionText.isNotEmpty) {
-                              setState(() {
-                                _activeSelection = MarkdownActiveSelection(
-                                  text: _pendingSelectionText,
-                                  pageNumber: _pendingSelectionPage,
-                                  position: stackPos,
-                                );
-                              });
-                            }
-                          },
-                          child: ListView.builder(
-                            controller: _scrollController,
-                            // ignore: deprecated_member_use
-                            cacheExtent: 1200,
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-                            itemCount: _chunks.length,
-                            itemBuilder: (context, index) {
-                              final chunk = _chunks[index];
-
-                              return _buildPageCard(
-                                context: context,
-                                chunk: chunk,
-                                index: index,
-                                theme: theme,
-                                isDark: isDark,
-                                isSepia: isSepia,
-                                cardBg: cardBg,
-                                textColor: textColor,
-                                codeBg: codeBg,
-                                baseFontSize: baseFontSize,
-                                cardMaxWidth: cardMaxWidth,
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-              ),
-            ],
-          ),
 
           // Auto-Popup Floating Toolbar following cursor when text is selected in Markdown mode (Appears on pointer release)
           if (_activeSelection != null)
@@ -1180,7 +1150,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                             final sel = _activeSelection;
                             if (sel != null) {
                               setState(() => _activeSelection = null);
-                              _createAnnotationFromSelection(
+                              _createHighlightFromSelection(
                                 sel.text,
                                 colorHex,
                                 sel.pageNumber,
@@ -1192,6 +1162,13 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                             if (sel != null) {
                               setState(() => _activeSelection = null);
                               _showNoteDialogForSelection(sel.text, sel.pageNumber);
+                            }
+                          },
+                          onAskAi: () {
+                            final sel = _activeSelection;
+                            if (sel != null) {
+                              setState(() => _activeSelection = null);
+                              widget.onAskAi?.call(sel.text, sel.pageNumber);
                             }
                           },
                           onDismiss: () {
@@ -1223,6 +1200,70 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     required double cardMaxWidth,
   }) {
     final cardKey = _cardKeys.putIfAbsent(chunk.pageNumber, () => GlobalKey());
+    final annoProvider = context.watch<AnnotationProvider>();
+    final allDocAnnos = annoProvider.annotations;
+
+    // Collect all annotations that belong to this chunk or whose selectedText is in this chunk
+    final chunkAnnos = <PdfAnnotation>[];
+    final Set<String> seenIds = {};
+
+    for (final a in allDocAnnos) {
+      if (seenIds.contains(a.id)) continue;
+      if (a.pageNumber == chunk.pageNumber) {
+        chunkAnnos.add(a);
+        seenIds.add(a.id);
+      } else if ((a.isCard || a.isNote) && a.selectedText.trim().isNotEmpty) {
+        final text = a.selectedText.trim();
+        if (chunk.content.contains(text)) {
+          chunkAnnos.add(a);
+          seenIds.add(a.id);
+        } else {
+          final cleanFormula = text.replaceAll(RegExp(r'^(\$\$|\$)|(\$\$|\$)$'), '').trim();
+          if (cleanFormula.isNotEmpty && chunk.content.contains(cleanFormula)) {
+            chunkAnnos.add(a);
+            seenIds.add(a.id);
+          }
+        }
+      }
+    }
+
+    final cardAndNotes = chunkAnnos
+        .where((a) => (a.isCard || a.isNote) && a.selectedText.trim().isNotEmpty)
+        .toList();
+    final pageCards = chunkAnnos.where((a) => a.isCard).toList();
+    final pageNotes = chunkAnnos.where((a) => a.isNote).toList();
+    final Map<String, PdfAnnotation> annosById = {for (final a in chunkAnnos) a.id: a};
+
+    String displayContent = chunk.content;
+    for (final a in cardAndNotes) {
+      final sel = a.selectedText.trim();
+      final badgeTag = ' <annobadge id="${a.id}" type="${a.isCard ? "card" : "note"}"></annobadge>';
+      if (!displayContent.contains('id="${a.id}"') && !displayContent.contains("id='${a.id}'")) {
+        if (displayContent.contains(sel)) {
+          final hlPattern = RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?' + RegExp.escape(sel) + r'==');
+          if (hlPattern.hasMatch(displayContent)) {
+            displayContent = displayContent.replaceFirstMapped(hlPattern, (m) {
+              return '${m.group(0)}$badgeTag';
+            });
+          } else {
+            displayContent = displayContent.replaceFirst(sel, '$sel$badgeTag');
+          }
+        } else {
+          // If formula delimiters are in selectedText or markdown:
+          final cleanFormula = sel.replaceAll(RegExp(r'^(\$\$|\$)|(\$\$|\$)$'), '').trim();
+          if (cleanFormula.isNotEmpty && displayContent.contains(cleanFormula)) {
+            final fHlPattern = RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?[^=]*' + RegExp.escape(cleanFormula) + r'[^=]*==');
+            if (fHlPattern.hasMatch(displayContent)) {
+              displayContent = displayContent.replaceFirstMapped(fHlPattern, (m) {
+                return '${m.group(0)}$badgeTag';
+              });
+            } else {
+              displayContent = displayContent.replaceFirst(cleanFormula, '$cleanFormula$badgeTag');
+            }
+          }
+        }
+      }
+    }
 
     return Center(
       child: ConstrainedBox(
@@ -1245,6 +1286,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
               ),
             ],
           ),
+          clipBehavior: Clip.antiAlias,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -1255,7 +1297,6 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                   color: isDark
                       ? Colors.white.withValues(alpha: 0.03)
                       : (isSepia ? const Color(0xFFEFE4CC) : const Color(0xFFF8FAFC)),
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(13)),
                   border: Border(
                     bottom: BorderSide(
                       color: isDark
@@ -1274,7 +1315,9 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
-                        '第 ${chunk.pageNumber} 页',
+                        (index + 1 < _chunks.length && _chunks[index + 1].pageNumber > chunk.pageNumber + 1)
+                            ? '第 ${chunk.pageNumber} - ${_chunks[index + 1].pageNumber - 1} 页'
+                            : '第 ${chunk.pageNumber} 页',
                         style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.bold,
@@ -1295,6 +1338,100 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                 ),
               ),
 
+              // Page Cards & Notes summary strip if present on this page
+              if (pageCards.isNotEmpty || pageNotes.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? Colors.white.withValues(alpha: 0.02)
+                        : (isSepia ? const Color(0xFFF0E5CE) : const Color(0xFFF1F5F9)),
+                    border: Border(
+                      bottom: BorderSide(
+                        color: isDark
+                            ? const Color(0xFF334155)
+                            : (isSepia ? const Color(0xFFE2D6BC) : const Color(0xFFE2E8F0)),
+                        width: 0.8,
+                      ),
+                    ),
+                  ),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      ...pageCards.map((c) {
+                        final cColor = AppTheme.parseHexColor(c.colorHex);
+                        return Tooltip(
+                          message: '知识卡片: ${c.displayTitle} (点击查看)',
+                          child: InkWell(
+                            onTap: () => _openCardDialog(c),
+                            borderRadius: BorderRadius.circular(6),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: cColor.withValues(alpha: isDark ? 0.25 : 0.12),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: cColor.withValues(alpha: 0.4)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.style_rounded, size: 12, color: cColor),
+                                  const SizedBox(width: 4),
+                                  ConstrainedBox(
+                                    constraints: const BoxConstraints(maxWidth: 160),
+                                    child: Text(
+                                      c.displayTitle,
+                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: cColor),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                      ...pageNotes.map((n) {
+                        final nColor = AppTheme.parseHexColor(n.colorHex);
+                        return Tooltip(
+                          message: '批注笔记: ${n.displayTitle} (点击查看)',
+                          child: InkWell(
+                            onTap: () => _openNoteDialog(n),
+                            borderRadius: BorderRadius.circular(6),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: nColor.withValues(alpha: isDark ? 0.25 : 0.12),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: nColor.withValues(alpha: 0.4)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.edit_note_rounded, size: 13, color: nColor),
+                                  const SizedBox(width: 4),
+                                  ConstrainedBox(
+                                    constraints: const BoxConstraints(maxWidth: 160),
+                                    child: Text(
+                                      n.displayTitle,
+                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: nColor),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+
               // Markdown Content for this page with responsive SelectionArea
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 22),
@@ -1309,25 +1446,76 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                   contextMenuBuilder: (context, selectableRegionState) =>
                       _buildMarkdownContextMenu(context, selectableRegionState, chunk.pageNumber),
                   child: MarkdownBody(
-                    data: chunk.content,
+                    data: displayContent,
                     selectable: false,
                     extensionSet: _latexExtensionSet,
                     builders: {
+                      'annobadge': _AnnotationBadgeElementBuilder(
+                        annotationsById: annosById,
+                        isDark: isDark,
+                        onOpenCard: _openCardDialog,
+                        onOpenNote: _openNoteDialog,
+                      ),
                       'latex': _LatexElementBuilder(
                         textColor: textColor,
                         baseFontSize: baseFontSize,
                         codeBg: codeBg,
                         isDark: isDark,
+                        pageNumber: chunk.pageNumber,
+                        onHighlight: _handleHighlightLatex,
+                        onRemoveHighlight: _handleRemoveHighlightLatex,
+                        onAddNote: _handleAddNoteForLatex,
+                        onAskAi: (rawLatex, {required bool isDisplay, required int pageNumber}) {
+                          final formulaText = isDisplay ? '\$\$$rawLatex\$\$' : '\$$rawLatex\$';
+                          widget.onAskAi?.call(formulaText, pageNumber);
+                        },
                       ),
                       'code': _LatexCodeElementBuilder(
                         textColor: textColor,
                         baseFontSize: baseFontSize,
                         codeBg: codeBg,
                         isDark: isDark,
+                        pageNumber: chunk.pageNumber,
+                        onHighlight: _handleHighlightLatex,
+                        onRemoveHighlight: _handleRemoveHighlightLatex,
+                        onAddNote: _handleAddNoteForLatex,
+                        onAskAi: (rawLatex, {required bool isDisplay, required int pageNumber}) {
+                          final formulaText = isDisplay ? '\$\$$rawLatex\$\$' : '\$$rawLatex\$';
+                          widget.onAskAi?.call(formulaText, pageNumber);
+                        },
                       ),
                       'mark': _MarkElementBuilder(
+                        textColor: textColor,
+                        baseFontSize: baseFontSize,
+                        codeBg: codeBg,
                         isDark: isDark,
+                        pageNumber: chunk.pageNumber,
+                        annotationsById: annosById,
+                        onOpenCard: _openCardDialog,
+                        onOpenNote: _openNoteDialog,
+                        onHighlight: _handleHighlightLatex,
+                        onRemoveHighlight: _handleRemoveHighlightLatex,
+                        onAddNote: _handleAddNoteForLatex,
+                        onAskAi: (rawLatex, {required bool isDisplay, required int pageNumber}) {
+                          final formulaText = isDisplay ? '\$\$$rawLatex\$\$' : '\$$rawLatex\$';
+                          widget.onAskAi?.call(formulaText, pageNumber);
+                        },
                       ),
+                      'u': HtmlUnderlineElementBuilder(),
+                      'sub': HtmlSubscriptElementBuilder(),
+                      'sup': HtmlSuperscriptElementBuilder(),
+                      'del': HtmlStrikeElementBuilder(),
+                      'font': HtmlStyledSpanElementBuilder(isDark: isDark),
+                      'span': HtmlStyledSpanElementBuilder(isDark: isDark),
+                      'kbd': HtmlKbdElementBuilder(isDark: isDark),
+                      'small': HtmlSizeElementBuilder(scale: 0.82),
+                      'big': HtmlSizeElementBuilder(scale: 1.18),
+                      'ruby': HtmlRubyElementBuilder(isDark: isDark),
+                      'abbr': HtmlAbbrElementBuilder(),
+                      'br': HtmlBreakElementBuilder(),
+                      'center': HtmlCenterElementBuilder(),
+                      'details': HtmlDetailsElementBuilder(isDark: isDark),
+                      'html-table': HtmlTableElementBuilder(isDark: isDark),
                     },
                     styleSheet: MarkdownStyleSheet(
                       p: TextStyle(
@@ -1381,7 +1569,6 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                       ),
                       blockquoteDecoration: BoxDecoration(
                         color: codeBg.withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(6),
                         border: Border(
                           left: BorderSide(
                             color: theme.colorScheme.primary,
@@ -1478,18 +1665,28 @@ class LatexBracketInlineSyntax extends md.InlineSyntax {
   }
 }
 
-/// Renders LaTeX tags into mathematical typography with flutter_math_fork
+/// Renders LaTeX tags into interactive mathematical typography
 class _LatexElementBuilder extends MarkdownElementBuilder {
   final Color textColor;
   final double baseFontSize;
   final Color codeBg;
   final bool isDark;
+  final int pageNumber;
+  final void Function(String rawLatex, String colorHex, {required bool isDisplay, required int pageNumber})? onHighlight;
+  final void Function(String rawLatex, {required bool isDisplay, required int pageNumber})? onRemoveHighlight;
+  final void Function(String rawLatex, {required bool isDisplay, required int pageNumber})? onAddNote;
+  final void Function(String rawLatex, {required bool isDisplay, required int pageNumber})? onAskAi;
 
   _LatexElementBuilder({
     required this.textColor,
     required this.baseFontSize,
     required this.codeBg,
     required this.isDark,
+    required this.pageNumber,
+    this.onHighlight,
+    this.onRemoveHighlight,
+    this.onAddNote,
+    this.onAskAi,
   });
 
   @override
@@ -1498,74 +1695,51 @@ class _LatexElementBuilder extends MarkdownElementBuilder {
     if (text.isEmpty) return null;
 
     final isDisplay = element.attributes['display'] == 'true';
+    final highlightColor = element.attributes['highlightColor'];
 
     try {
-      if (isDisplay) {
-        return Center(
-          child: Container(
-            margin: const EdgeInsets.symmetric(vertical: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Math.tex(
-                text,
-                mathStyle: MathStyle.display,
-                textStyle: TextStyle(
-                  color: textColor,
-                  fontSize: baseFontSize * 1.1,
-                ),
-                onErrorFallback: (err) {
-                  return Text(
-                    text,
-                    style: TextStyle(
-                      fontFamily: 'monospace',
-                      color: textColor,
-                      fontSize: baseFontSize * 0.9,
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-        );
-      } else {
-        return Math.tex(
-          text,
-          mathStyle: MathStyle.text,
-          textStyle: TextStyle(
-            color: textColor,
-            fontSize: baseFontSize * 1.02,
-          ),
-          onErrorFallback: (err) {
-            return Text(
-              text,
-              style: TextStyle(
-                fontFamily: 'monospace',
-                color: textColor,
-                fontSize: baseFontSize * 0.9,
-              ),
-            );
-          },
-        );
-      }
+      return InteractiveLatexView(
+        rawLatex: text,
+        isDisplay: isDisplay,
+        textColor: textColor,
+        baseFontSize: baseFontSize,
+        codeBg: codeBg,
+        isDark: isDark,
+        highlightColor: highlightColor,
+        pageNumber: pageNumber,
+        onHighlight: onHighlight,
+        onRemoveHighlight: onRemoveHighlight,
+        onAddNote: onAddNote,
+        onAskAi: onAskAi,
+      );
     } catch (_) {
       return Text(text, style: preferredStyle);
     }
   }
 }
 
-/// Automatically handles ```latex or ```math fenced code blocks and renders as math
+/// Automatically handles ```latex or ```math fenced code blocks and renders as interactive math block
 class _LatexCodeElementBuilder extends MarkdownElementBuilder {
   final Color textColor;
   final double baseFontSize;
   final Color codeBg;
   final bool isDark;
+  final int pageNumber;
+  final void Function(String rawLatex, String colorHex, {required bool isDisplay, required int pageNumber})? onHighlight;
+  final void Function(String rawLatex, {required bool isDisplay, required int pageNumber})? onRemoveHighlight;
+  final void Function(String rawLatex, {required bool isDisplay, required int pageNumber})? onAddNote;
+  final void Function(String rawLatex, {required bool isDisplay, required int pageNumber})? onAskAi;
 
   _LatexCodeElementBuilder({
     required this.textColor,
     required this.baseFontSize,
     required this.codeBg,
     required this.isDark,
+    required this.pageNumber,
+    this.onHighlight,
+    this.onRemoveHighlight,
+    this.onAddNote,
+    this.onAskAi,
   });
 
   @override
@@ -1577,39 +1751,17 @@ class _LatexCodeElementBuilder extends MarkdownElementBuilder {
 
     final text = element.textContent.trim();
     if (isLatex && text.isNotEmpty) {
-      return Center(
-        child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            color: codeBg.withValues(alpha: 0.5),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-            ),
-          ),
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Math.tex(
-              text,
-              mathStyle: MathStyle.display,
-              textStyle: TextStyle(
-                color: textColor,
-                fontSize: baseFontSize * 1.1,
-              ),
-              onErrorFallback: (err) {
-                return Text(
-                  text,
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    color: textColor,
-                    fontSize: baseFontSize * 0.9,
-                  ),
-                );
-              },
-            ),
-          ),
-        ),
+      return LatexFencedBlockWidget(
+        rawLatex: text,
+        textColor: textColor,
+        baseFontSize: baseFontSize,
+        codeBg: codeBg,
+        isDark: isDark,
+        pageNumber: pageNumber,
+        onHighlight: onHighlight,
+        onRemoveHighlight: onRemoveHighlight,
+        onAddNote: onAddNote,
+        onAskAi: onAskAi,
       );
     }
     return null;
@@ -1628,7 +1780,8 @@ class MarkdownHighlightInlineSyntax extends md.InlineSyntax {
     final text = match.group(2);
     if (text == null || text.trim().isEmpty) return false;
 
-    final el = md.Element('mark', [md.Text(text)]);
+    final children = md.InlineParser(text, parser.document).parse();
+    final el = md.Element('mark', children);
     if (colorHex != null && colorHex.isNotEmpty) {
       el.attributes['color'] = colorHex;
     }
@@ -1651,7 +1804,8 @@ class HtmlMarkInlineSyntax extends md.InlineSyntax {
     final text = match.group(2);
     if (text == null || text.trim().isEmpty) return false;
 
-    final el = md.Element('mark', [md.Text(text)]);
+    final children = md.InlineParser(text, parser.document).parse();
+    final el = md.Element('mark', children);
     if (colorHex != null && colorHex.isNotEmpty) {
       el.attributes['color'] = colorHex;
     }
@@ -1662,17 +1816,36 @@ class HtmlMarkInlineSyntax extends md.InlineSyntax {
 
 /// Renders `<mark>` elements as vibrant fluorescent highlights with rounded background & accent underline
 class _MarkElementBuilder extends MarkdownElementBuilder {
+  final Color textColor;
+  final double baseFontSize;
+  final Color codeBg;
   final bool isDark;
+  final int pageNumber;
+  final Map<String, PdfAnnotation>? annotationsById;
+  final void Function(PdfAnnotation anno)? onOpenCard;
+  final void Function(PdfAnnotation anno)? onOpenNote;
+  final void Function(String rawLatex, String colorHex, {required bool isDisplay, required int pageNumber})? onHighlight;
+  final void Function(String rawLatex, {required bool isDisplay, required int pageNumber})? onRemoveHighlight;
+  final void Function(String rawLatex, {required bool isDisplay, required int pageNumber})? onAddNote;
+  final void Function(String rawLatex, {required bool isDisplay, required int pageNumber})? onAskAi;
 
   _MarkElementBuilder({
+    required this.textColor,
+    required this.baseFontSize,
+    required this.codeBg,
     required this.isDark,
+    required this.pageNumber,
+    this.annotationsById,
+    this.onOpenCard,
+    this.onOpenNote,
+    this.onHighlight,
+    this.onRemoveHighlight,
+    this.onAddNote,
+    this.onAskAi,
   });
 
   @override
   Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
-    final text = element.textContent;
-    if (text.isEmpty) return null;
-
     final colorHex = element.attributes['color'] ?? '#FDE047';
     Color baseColor;
     try {
@@ -1685,26 +1858,270 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
     final borderCol = baseColor.withValues(alpha: isDark ? 0.85 : 0.75);
     final textCol = preferredStyle?.color ?? (isDark ? const Color(0xFFF1F5F9) : const Color(0xFF1E293B));
 
+    // Check if the mark content is a fenced code block: ```latex ... ``` or ```math ... ``` or ```tex ... ```
+    final fullText = element.textContent.trim();
+    final fencedLatexMatch = RegExp(
+      r'^```(?:latex|math|tex)?\s*\n?([\s\S]+?)\n?```$',
+      caseSensitive: false,
+    ).firstMatch(fullText);
+
+    if (fencedLatexMatch != null) {
+      final code = fencedLatexMatch.group(1)!.trim();
+      return LatexFencedBlockWidget(
+        rawLatex: code,
+        textColor: textColor,
+        baseFontSize: baseFontSize,
+        codeBg: codeBg,
+        isDark: isDark,
+        highlightColor: colorHex,
+        pageNumber: pageNumber,
+        onHighlight: onHighlight,
+        onRemoveHighlight: onRemoveHighlight,
+        onAddNote: onAddNote,
+        onAskAi: onAskAi,
+      );
+    }
+
+    final childWidgets = <Widget>[];
+    if (element.children != null && element.children!.isNotEmpty) {
+      for (final childNode in element.children!) {
+        if (childNode is md.Element && childNode.tag == 'latex') {
+          final isDisplay = childNode.attributes['display'] == 'true';
+          childWidgets.add(
+            InteractiveLatexView(
+              rawLatex: childNode.textContent.trim(),
+              isDisplay: isDisplay,
+              textColor: textColor,
+              baseFontSize: baseFontSize,
+              codeBg: codeBg,
+              isDark: isDark,
+              highlightColor: colorHex,
+              pageNumber: pageNumber,
+              onHighlight: onHighlight,
+              onRemoveHighlight: onRemoveHighlight,
+              onAddNote: onAddNote,
+              onAskAi: onAskAi,
+            ),
+          );
+        } else if (childNode is md.Element && childNode.tag == 'annobadge') {
+          final id = childNode.attributes['id'] ?? '';
+          final anno = annotationsById?[id];
+          if (anno != null && onOpenCard != null && onOpenNote != null) {
+            childWidgets.add(_AnnotationBadgeElementBuilder.buildBadgeWidget(
+              anno: anno,
+              isDark: isDark,
+              onOpenCard: onOpenCard!,
+              onOpenNote: onOpenNote!,
+            ));
+          }
+        } else if (childNode is md.Text) {
+          final text = childNode.text;
+          final fenced = RegExp(
+            r'^```(?:latex|math|tex)?\s*\n?([\s\S]+?)\n?```$',
+            caseSensitive: false,
+          ).firstMatch(text.trim());
+          if (fenced != null) {
+            childWidgets.add(
+              LatexFencedBlockWidget(
+                rawLatex: fenced.group(1)!.trim(),
+                textColor: textColor,
+                baseFontSize: baseFontSize,
+                codeBg: codeBg,
+                isDark: isDark,
+                highlightColor: colorHex,
+                pageNumber: pageNumber,
+                onHighlight: onHighlight,
+                onRemoveHighlight: onRemoveHighlight,
+                onAddNote: onAddNote,
+                onAskAi: onAskAi,
+              ),
+            );
+          } else {
+            childWidgets.add(
+              Text(
+                childNode.text,
+                style: (preferredStyle ?? const TextStyle()).copyWith(
+                  color: textCol,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            );
+          }
+        } else if (childNode is md.Element) {
+          final text = childNode.textContent;
+          final fenced = RegExp(
+            r'^```(?:latex|math|tex)?\s*\n?([\s\S]+?)\n?```$',
+            caseSensitive: false,
+          ).firstMatch(text.trim());
+          if (fenced != null) {
+            childWidgets.add(
+              LatexFencedBlockWidget(
+                rawLatex: fenced.group(1)!.trim(),
+                textColor: textColor,
+                baseFontSize: baseFontSize,
+                codeBg: codeBg,
+                isDark: isDark,
+                highlightColor: colorHex,
+                pageNumber: pageNumber,
+                onHighlight: onHighlight,
+                onRemoveHighlight: onRemoveHighlight,
+                onAddNote: onAddNote,
+                onAskAi: onAskAi,
+              ),
+            );
+          } else {
+            childWidgets.add(
+              Text(
+                childNode.textContent,
+                style: (preferredStyle ?? const TextStyle()).copyWith(
+                  color: textCol,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            );
+          }
+        }
+      }
+    }
+
+    if (childWidgets.length == 1) {
+      final first = childWidgets.first;
+      if (first is InteractiveLatexView || first is LatexFencedBlockWidget) {
+        return first;
+      }
+    }
+
+    Widget contentWidget;
+    if (childWidgets.length == 1) {
+      contentWidget = childWidgets.first;
+    } else if (childWidgets.length > 1) {
+      contentWidget = Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: childWidgets,
+      );
+    } else {
+      final text = element.textContent;
+      if (text.isEmpty) return null;
+      contentWidget = Text(
+        text,
+        style: (preferredStyle ?? const TextStyle()).copyWith(
+          color: textCol,
+          fontWeight: FontWeight.w600,
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
       margin: const EdgeInsets.symmetric(horizontal: 1),
       decoration: BoxDecoration(
         color: highlightBg,
         borderRadius: BorderRadius.circular(4),
-        border: Border(
-          bottom: BorderSide(
-            color: borderCol,
-            width: 2.2,
+        border: Border.all(
+          color: borderCol,
+          width: 1.0,
+        ),
+      ),
+      child: contentWidget,
+    );
+  }
+}
+
+/// Inline Markdown syntax matching `<annobadge id="..." type="..." />` or `<annobadge ...></annobadge>`
+class AnnotationBadgeInlineSyntax extends md.InlineSyntax {
+  AnnotationBadgeInlineSyntax()
+      : super(
+          r"""<annobadge\b(?=[^>]*\bid=["']([^"']+)["'])(?=[^>]*\btype=["']([^"']+)["'])?[^>]*(?:/>|></annobadge>)""",
+          caseSensitive: false,
+        );
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final rawMatch = match.group(0) ?? '';
+    final idMatch = RegExp(r"""id=["']([^"']+)["']""", caseSensitive: false).firstMatch(rawMatch);
+    final typeMatch = RegExp(r"""type=["']([^"']+)["']""", caseSensitive: false).firstMatch(rawMatch);
+
+    final id = idMatch?.group(1) ?? '';
+    final type = typeMatch?.group(1) ?? '';
+
+    if (id.isEmpty) return false;
+
+    final el = md.Element('annobadge', []);
+    el.attributes['id'] = id;
+    el.attributes['type'] = type;
+    parser.addNode(el);
+    return true;
+  }
+}
+
+/// Renders in-text interactive icon badges on the left of quoted sentences / formulas
+class _AnnotationBadgeElementBuilder extends MarkdownElementBuilder {
+  final Map<String, PdfAnnotation> annotationsById;
+  final bool isDark;
+  final void Function(PdfAnnotation anno) onOpenCard;
+  final void Function(PdfAnnotation anno) onOpenNote;
+
+  _AnnotationBadgeElementBuilder({
+    required this.annotationsById,
+    required this.isDark,
+    required this.onOpenCard,
+    required this.onOpenNote,
+  });
+
+  static Widget buildBadgeWidget({
+    required PdfAnnotation anno,
+    required bool isDark,
+    required void Function(PdfAnnotation anno) onOpenCard,
+    required void Function(PdfAnnotation anno) onOpenNote,
+  }) {
+    final isCard = anno.isCard;
+    final color = AppTheme.parseHexColor(anno.colorHex);
+
+    return Tooltip(
+      message: isCard
+          ? '知识卡片: ${anno.displayTitle} (点击查看/编辑)'
+          : '批注笔记: ${anno.displayTitle} (点击查看/编辑)',
+      child: InkWell(
+        onTap: () {
+          if (isCard) {
+            onOpenCard(anno);
+          } else {
+            onOpenNote(anno);
+          }
+        },
+        borderRadius: BorderRadius.circular(5),
+        child: Container(
+          margin: const EdgeInsets.only(left: 4, right: 2),
+          padding: const EdgeInsets.all(2.5),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: isDark ? 0.28 : 0.15),
+            borderRadius: BorderRadius.circular(5),
+            border: Border.all(
+              color: color.withValues(alpha: isDark ? 0.65 : 0.45),
+              width: 1.0,
+            ),
+          ),
+          child: Icon(
+            isCard ? Icons.style_rounded : Icons.edit_note_rounded,
+            size: 13,
+            color: color,
           ),
         ),
       ),
-      child: Text(
-        text,
-        style: (preferredStyle ?? const TextStyle()).copyWith(
-          color: textCol,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
+    );
+  }
+
+  @override
+  Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+    final id = element.attributes['id'] ?? '';
+    final anno = annotationsById[id];
+    if (anno == null) return null;
+
+    return buildBadgeWidget(
+      anno: anno,
+      isDark: isDark,
+      onOpenCard: onOpenCard,
+      onOpenNote: onOpenNote,
     );
   }
 }

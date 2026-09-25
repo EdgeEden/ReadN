@@ -184,17 +184,11 @@ class DocumentProvider extends ChangeNotifier {
 
   Future<bool> triggerOcr(
     String docId, {
-    String engine = "adobe",
-    String? adobeClientId,
-    String? adobeClientSecret,
-    String adobeLocale = "zh-CN",
-    String adobeType = "searchable_image_exact",
     String? apiToken,
     String? apiUrl,
     String? modelName,
     String pageScope = "all",
     List<int>? targetPages,
-    String languages = "chi_sim+eng+equ",
     bool useDocOrientationClassify = false,
     bool useDocUnwarping = false,
     bool useChartRecognition = false,
@@ -202,17 +196,11 @@ class DocumentProvider extends ChangeNotifier {
     try {
       await apiService.startOcr(
         docId,
-        engine: engine,
-        adobeClientId: adobeClientId,
-        adobeClientSecret: adobeClientSecret,
-        adobeLocale: adobeLocale,
-        adobeType: adobeType,
         apiToken: apiToken,
         apiUrl: apiUrl,
         modelName: modelName,
         pageScope: pageScope,
         targetPages: targetPages,
-        languages: languages,
         useDocOrientationClassify: useDocOrientationClassify,
         useDocUnwarping: useDocUnwarping,
         useChartRecognition: useChartRecognition,
@@ -276,7 +264,7 @@ class DocumentProvider extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      _errorMessage = '恢复原始文字层失败: $e';
+      _errorMessage = '清除 OCR 结果失败: $e';
       notifyListeners();
       return false;
     }

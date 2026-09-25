@@ -1,7 +1,15 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:frontend/models/document_model.dart';
 import 'package:frontend/models/annotation_model.dart';
+import 'package:frontend/models/ai_message_model.dart';
+import 'package:frontend/providers/ai_provider.dart';
+import 'package:frontend/providers/reader_settings_provider.dart';
+import 'package:frontend/services/ai_service.dart';
+import 'package:frontend/services/storage_service.dart';
+import 'package:frontend/views/reader/components/markdown_html_support.dart';
 import 'package:frontend/views/reader/components/markdown_reader_view.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   test('DocumentModel serialization test', () {
@@ -132,6 +140,474 @@ void main() {
     expect(matches2.first.group(1), '#93C5FD');
     expect(matches2.first.group(2), 'colored mark');
   });
+
+  test('HTML formatting inline syntaxes match respective tags', () {
+    // Underline
+    final uSyntax = HtmlUnderlineSyntax();
+    final uMatches = uSyntax.pattern.allMatches('Text with <u>underlined content</u> here').toList();
+    expect(uMatches.length, 1);
+    expect(uMatches.first.group(1), 'underlined content');
+
+    // Subscript & Superscript
+    final subSyntax = HtmlSubscriptSyntax();
+    final subMatches = subSyntax.pattern.allMatches('Water is H<sub>2</sub>O').toList();
+    expect(subMatches.length, 1);
+    expect(subMatches.first.group(1), '2');
+
+    final supSyntax = HtmlSuperscriptSyntax();
+    final supMatches = supSyntax.pattern.allMatches('Energy is mc<sup>2</sup>').toList();
+    expect(supMatches.length, 1);
+    expect(supMatches.first.group(1), '2');
+
+    // Strikethrough
+    final delSyntax = HtmlStrikeSyntax();
+    final delMatches = delSyntax.pattern.allMatches('Price was <del>¥100</del> ¥80').toList();
+    expect(delMatches.length, 1);
+    expect(delMatches.first.group(1), '¥100');
+
+    // Span with style
+    final spanSyntax = HtmlSpanSyntax();
+    final spanMatches = spanSyntax.pattern.allMatches('<span style="color: #ef4444; font-weight: bold;">Red Text</span>').toList();
+    expect(spanMatches.length, 1);
+    expect(spanMatches.first.group(1), contains('color: #ef4444'));
+    expect(spanMatches.first.group(3), 'Red Text');
+
+    // Kbd
+    final kbdSyntax = HtmlKbdSyntax();
+    final kbdMatches = kbdSyntax.pattern.allMatches('Press <kbd>Ctrl+C</kbd> to copy').toList();
+    expect(kbdMatches.length, 1);
+    expect(kbdMatches.first.group(1), 'Ctrl+C');
+
+    // Ruby
+    final rubySyntax = HtmlRubySyntax();
+    final rubyMatches = rubySyntax.pattern.allMatches('<ruby>汉字<rt>hàn zì</rt></ruby>').toList();
+    expect(rubyMatches.length, 1);
+    expect(rubyMatches.first.group(1), '汉字');
+    expect(rubyMatches.first.group(2), 'hàn zì');
+
+    // Details / Summary
+    final detailsSyntax = HtmlDetailsSyntax();
+    final detailsMatches = detailsSyntax.pattern.allMatches('<details><summary>点击查看解题步骤</summary>第1步：公式化简</details>').toList();
+    expect(detailsMatches.length, 1);
+    expect(detailsMatches.first.group(1), '点击查看解题步骤');
+    expect(detailsMatches.first.group(2), '第1步：公式化简');
+  });
+
+  test('CSS property and HTML color parsing helper tests', () {
+    final css = parseCssProperties('color: #ef4444; font-size: 18px; font-weight: bold; background-color: rgb(255, 255, 0);');
+    expect(css['color'], '#ef4444');
+    expect(css['font-size'], '18px');
+    expect(css['font-weight'], 'bold');
+    expect(css['background-color'], 'rgb(255, 255, 0)');
+
+    expect(parseHtmlColor('red'), isNotNull);
+    expect(parseHtmlColor('#3B82F6'), isNotNull);
+    expect(parseHtmlColor('rgba(16, 185, 129, 0.5)'), isNotNull);
+  });
+
+  test('ReaderSettingsProvider sidebar docking and tab switching test', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final storage = StorageService(prefs);
+    final settings = ReaderSettingsProvider(storageService: storage);
+
+    expect(settings.isLeftSidebarOpen, true);
+    expect(settings.leftDockedTabs, contains(ReaderSidebarTab.outline));
+    expect(settings.leftDockedTabs, contains(ReaderSidebarTab.search));
+    expect(settings.rightDockedTabs, contains(ReaderSidebarTab.highlights));
+    expect(settings.rightDockedTabs, contains(ReaderSidebarTab.notes));
+
+    // Dock outline to right sidebar
+    settings.dockTabToRight(ReaderSidebarTab.outline);
+    expect(settings.leftDockedTabs.contains(ReaderSidebarTab.outline), false);
+    expect(settings.rightDockedTabs.contains(ReaderSidebarTab.outline), true);
+    expect(settings.isRightSidebarOpen, true);
+    expect(settings.activeRightTab, ReaderSidebarTab.outline);
+
+    // Dock notes to left sidebar
+    settings.dockTabToLeft(ReaderSidebarTab.notes);
+    expect(settings.rightDockedTabs.contains(ReaderSidebarTab.notes), false);
+    expect(settings.leftDockedTabs.contains(ReaderSidebarTab.notes), true);
+    expect(settings.isLeftSidebarOpen, true);
+    expect(settings.activeLeftTab, ReaderSidebarTab.notes);
+  });
+
+  test('preprocessMarkdownHtml converts HTML tables and divs correctly', () {
+    const rawSample = '''
+<!-- Page 1 -->
+
+阿斯达克警方很快很快哈哈
+
+<div style="text-align: center;">啊是的哇打算的</div>
+
+<table border=1 style='margin: auto; word-wrap: break-word;'><tr><td style='text-align: center;'>Asd</td><td></td><td></td><td></td><td></td></tr><tr><td></td><td></td><td></td><td>aSDwqd</td><td></td></tr></table>
+''';
+
+    final processed = preprocessMarkdownHtml(rawSample);
+    expect(processed, contains('<center>啊是的哇打算的</center>'));
+    expect(processed, contains('| Asd |  |  |  |  |'));
+    expect(processed, contains('| --- | --- | --- | --- | --- |'));
+    expect(processed, contains('|  |  |  | aSDwqd |  |'));
+  });
+
+  test('MarkdownPageChunk resolution handles merged/skipped page numbers gracefully', () {
+    final chunks = [
+      const MarkdownPageChunk(pageNumber: 1, content: 'Page 1 content'),
+      const MarkdownPageChunk(pageNumber: 2, content: 'Merged table spanning pages 2 to 4'),
+      const MarkdownPageChunk(pageNumber: 5, content: 'Page 5 content'),
+    ];
+
+    // Helper simulating the lookup logic in jumpToPage
+    int resolveTargetIndex(int pageNumber) {
+      int targetIndex = chunks.indexWhere((c) => c.pageNumber == pageNumber);
+      if (targetIndex == -1) {
+        for (int i = chunks.length - 1; i >= 0; i--) {
+          if (chunks[i].pageNumber <= pageNumber) {
+            targetIndex = i;
+            break;
+          }
+        }
+      }
+      if (targetIndex == -1) {
+        targetIndex = 0;
+      }
+      return targetIndex;
+    }
+
+    expect(resolveTargetIndex(1), 0);
+    expect(resolveTargetIndex(2), 1);
+    expect(resolveTargetIndex(3), 1); // Page 3 jumps to chunk 2
+    expect(resolveTargetIndex(4), 1); // Page 4 jumps to chunk 2
+    expect(resolveTargetIndex(5), 2); // Page 5 jumps to chunk 5
+    expect(resolveTargetIndex(6), 2); // Page 6 jumps to chunk 5
+  });
+
+  test('Markdown parser recognizes LaTeX inside highlight tags', () {
+    final syntaxes = [
+      LatexInlineSyntax(),
+      MarkdownHighlightInlineSyntax(),
+    ];
+    final doc = md.Document(inlineSyntaxes: syntaxes);
+    final nodes = doc.parseInline('Here is ==\$E = mc^2\$== highlighted.');
+    expect(nodes.length, 3);
+    expect(nodes[1], isA<md.Element>());
+    final markElem = nodes[1] as md.Element;
+    expect(markElem.tag, 'mark');
+    expect(markElem.children, isNotEmpty);
+    expect(markElem.children!.first, isA<md.Element>());
+    final latexChild = markElem.children!.first as md.Element;
+    expect(latexChild.tag, 'latex');
+    expect(latexChild.textContent, 'E = mc^2');
+  });
+
+  test('LaTeX formula highlight replacement and removal logic works cleanly', () {
+    const rawContent = r'''
+Einstein formulated $E = mc^2$ in relativity.
+Also consider display formula:
+$$\sum_{i=1}^n x_i = S$$
+''';
+
+    // 1. Highlight inline formula with custom green color
+    const trimmedLatex = 'E = mc^2';
+    final escaped = RegExp.escape(trimmedLatex);
+    final plainRegex = RegExp(
+      r'(\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
+          escaped +
+          r'\s*(\$\$|\$|\\\]|\\\)|\n?```)',
+    );
+
+    expect(plainRegex.hasMatch(rawContent), true);
+    final highlightedContent = rawContent.replaceFirstMapped(plainRegex, (m) {
+      final openDelim = m.group(1) ?? r'$';
+      final closeDelim = m.group(2) ?? r'$';
+      return '==[#86EFAC]$openDelim$trimmedLatex$closeDelim==';
+    });
+
+    expect(highlightedContent, contains(r'==[#86EFAC]$E = mc^2$=='));
+
+    // 2. Change highlight color from green to purple
+    final alreadyHighlightedRegex = RegExp(
+      r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*(\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
+          escaped +
+          r'\s*(\$\$|\$|\\\]|\\\)|\n?```)\s*==',
+    );
+
+    expect(alreadyHighlightedRegex.hasMatch(highlightedContent), true);
+    final changedColorContent = highlightedContent.replaceAllMapped(alreadyHighlightedRegex, (m) {
+      final openDelim = m.group(1) ?? r'$';
+      final closeDelim = m.group(2) ?? r'$';
+      return '==[#D8B4FE]$openDelim$trimmedLatex$closeDelim==';
+    });
+
+    expect(changedColorContent, contains(r'==[#D8B4FE]$E = mc^2$=='));
+
+    // 3. Remove highlight
+    final unhighlightedContent = changedColorContent.replaceAllMapped(alreadyHighlightedRegex, (m) {
+      final openDelim = m.group(1) ?? r'$';
+      final closeDelim = m.group(2) ?? r'$';
+      return '$openDelim$trimmedLatex$closeDelim';
+    });
+
+    expect(unhighlightedContent, contains(r'$E = mc^2$'));
+    expect(unhighlightedContent, isNot(contains('==')));
+  });
+
+  test('Highlight deletion from markdown handles plain text, html marks, and fenced latex blocks', () {
+    String removeHighlightFromMarkdown(String markdown, String targetText) {
+      if (markdown.trim().isEmpty || targetText.trim().isEmpty) return markdown;
+      var result = markdown;
+      final trimmed = targetText.trim();
+      final escaped = RegExp.escape(trimmed);
+
+      // 1. Direct Markdown highlight
+      final directRegex = RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*' + escaped + r'\s*==');
+      if (directRegex.hasMatch(result)) {
+        result = result.replaceAllMapped(directRegex, (_) => trimmed);
+      }
+
+      // 2. HTML mark tag
+      final htmlMarkRegex = RegExp(r'<mark(?:\s+[^>]*)?>\s*' + escaped + r'\s*</mark>', caseSensitive: false);
+      if (htmlMarkRegex.hasMatch(result)) {
+        result = result.replaceAllMapped(htmlMarkRegex, (_) => trimmed);
+      }
+
+      // 3. Mathematical formulas
+      final strippedFormula = trimmed.replaceAll(RegExp(r'^(\$\$|\$)|(\$\$|\$)$'), '').trim();
+      if (strippedFormula.isNotEmpty) {
+        final escapedStripped = RegExp.escape(strippedFormula);
+        final formulaHighlightRegex = RegExp(
+          r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*((\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
+              escapedStripped +
+              r'\s*(\$\$|\$|\\\]|\\\)|\n?```))\s*==',
+        );
+        if (formulaHighlightRegex.hasMatch(result)) {
+          result = result.replaceAllMapped(formulaHighlightRegex, (m) => m.group(1) ?? strippedFormula);
+        }
+      }
+
+      return result;
+    }
+
+    // 1. Standard text highlight deletion
+    const md1 = 'This is ==[#FDE047]important text== in a document.';
+    final res1 = removeHighlightFromMarkdown(md1, 'important text');
+    expect(res1, 'This is important text in a document.');
+
+    // 2. HTML mark deletion
+    const md2 = 'This is <mark data-color="#86EFAC">green marked text</mark> in a document.';
+    final res2 = removeHighlightFromMarkdown(md2, 'green marked text');
+    expect(res2, 'This is green marked text in a document.');
+
+    // 3. LaTeX fenced block highlight deletion
+    const md3 = '''
+Here is a matrix:
+==[#7DD3FC]```latex
+\\begin{matrix}
+1 & 0 \\\\
+0 & 1
+\\end{matrix}
+```==
+End of page.
+''';
+    final res3 = removeHighlightFromMarkdown(md3, '''\\begin{matrix}
+1 & 0 \\\\
+0 & 1
+\\end{matrix}''');
+    expect(res3, isNot(contains('==')));
+    expect(res3, contains('```latex'));
+    expect(res3, contains('\\begin{matrix}'));
+  });
+
+  test('AiConfig model and presets test', () {
+    final config = AiConfig(
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'sk-deepseek-test-key-123456',
+      model: 'deepseek-reasoner',
+      systemPrompt: 'You are an expert reading assistant.',
+      temperature: 0.6,
+      includePageContext: true,
+    );
+
+    expect(config.baseUrl, 'https://api.deepseek.com/v1');
+    expect(config.apiKey, 'sk-deepseek-test-key-123456');
+    expect(config.model, 'deepseek-reasoner');
+    expect(config.temperature, 0.6);
+    expect(config.includePageContext, true);
+    expect(config.hasValidKey, true);
+
+    final modified = config.copyWith(
+      model: 'deepseek-chat',
+      temperature: 0.7,
+    );
+    expect(modified.model, 'deepseek-chat');
+    expect(modified.temperature, 0.7);
+    expect(modified.baseUrl, config.baseUrl);
+    expect(modified.apiKey, config.apiKey);
+
+    expect(AiConfig.presets.isNotEmpty, true);
+    final dsPreset = AiConfig.presets.firstWhere((p) => p.name == 'deepseek');
+    expect(dsPreset.baseUrl, 'https://api.deepseek.com');
+    expect(dsPreset.recommendedModels, contains('deepseek-reasoner'));
+    expect(dsPreset.recommendedModels, contains('deepseek-chat'));
+  });
+
+  test('ChatMessage reasoning/thinking state and duration test', () {
+    final msg = ChatMessage(
+      id: 'msg-1',
+      role: 'assistant',
+      content: 'This is the final response.',
+      thinkingContent: 'Step 1: Parse the user request.\nStep 2: Formulate solution.',
+      isThinking: false,
+      isThinkingExpanded: false,
+      thinkingDurationMs: 2450,
+      quotedText: 'LaTeX formula: \$\\int_0^1 x dx\$',
+      pageNumber: 3,
+    );
+
+    expect(msg.role, 'assistant');
+    expect(msg.content, 'This is the final response.');
+    expect(msg.hasThinking, true);
+    expect(msg.thinkingDurationMs, 2450);
+    expect(msg.isThinkingExpanded, false);
+    expect(msg.hasQuote, true);
+    expect(msg.pageNumber, 3);
+  });
+
+  test('StorageService persists AI configuration locally', () async {
+    SharedPreferences.setMockInitialValues({});
+    final storage = await StorageService.init();
+
+    expect(storage.getAiApiKey(), '');
+    expect(storage.getAiBaseUrl(), 'https://api.deepseek.com');
+    expect(storage.getAiModel(), '');
+
+    await storage.setAiApiKey('sk-local-storage-only-key');
+    await storage.setAiBaseUrl('https://api.siliconflow.cn/v1');
+    await storage.setAiModel('deepseek-ai/DeepSeek-R1');
+    await storage.setAiIncludeContext(true);
+
+    expect(storage.getAiApiKey(), 'sk-local-storage-only-key');
+    expect(storage.getAiBaseUrl(), 'https://api.siliconflow.cn/v1');
+    expect(storage.getAiModel(), 'deepseek-ai/DeepSeek-R1');
+    expect(storage.getAiIncludeContext(), true);
+  });
+
+  test('AiProvider quote management and config updates', () async {
+    SharedPreferences.setMockInitialValues({});
+    final storage = await StorageService.init();
+    final aiService = AiService();
+    final provider = AiProvider(storageService: storage, aiService: aiService);
+
+    expect(provider.hasPendingQuote, false);
+    provider.setPendingQuote('Important highlighted quote', pageNumber: 5);
+    expect(provider.hasPendingQuote, true);
+    expect(provider.pendingQuotedText, 'Important highlighted quote');
+    expect(provider.pendingQuotedPage, 5);
+
+    provider.clearPendingQuote();
+    expect(provider.hasPendingQuote, false);
+
+    await provider.updateConfig(
+      provider.config.copyWith(
+        apiKey: 'test-key',
+        model: 'deepseek-chat',
+      ),
+    );
+
+    expect(provider.isConfigured, true);
+    expect(provider.config.apiKey, 'test-key');
+    expect(provider.config.model, 'deepseek-chat');
+  });
+
+  test('AiService fetchModelList validates empty baseUrl', () async {
+    final aiService = AiService();
+    final result = await aiService.fetchModelList(baseUrl: '', apiKey: 'sk-test');
+    expect(result.success, false);
+    expect(result.models.isEmpty, true);
+    expect(result.message, contains('Base URL'));
+  });
+
+  test('PdfAnnotation knowledge card properties and displayTitle test', () {
+    final card = PdfAnnotation(
+      id: 'card-101',
+      docId: 'doc-123',
+      type: 'card',
+      pageNumber: 3,
+      colorHex: '#8B5CF6',
+      rects: const [],
+      selectedText: r'E = mc^2',
+      noteContent: '## 质能方程解析\n- 核心原理: 质量与能量等价\n- 关键公式: \$E = mc^2\$',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    expect(card.isCard, true);
+    expect(card.isNote, false);
+    expect(card.isHighlight, false);
+    expect(card.displayTitle, '质能方程解析');
+  });
+
+  test('AnnotationBadgeInlineSyntax matches card and note tags', () {
+    final syntax = AnnotationBadgeInlineSyntax();
+    final doc = md.Document(inlineSyntaxes: [syntax]);
+    
+    // 1. Tag pair format
+    final parser1 = md.InlineParser('<annobadge id="c-123" type="card"></annobadge>', doc);
+    final nodes1 = parser1.parse();
+    expect(nodes1.length, 1);
+    expect(nodes1.first is md.Element, true);
+    final el1 = nodes1.first as md.Element;
+    expect(el1.tag, 'annobadge');
+    expect(el1.attributes['id'], 'c-123');
+    expect(el1.attributes['type'], 'card');
+
+    // 2. Self closing format
+    final parser2 = md.InlineParser('<annobadge id="n-456" type="note" />', doc);
+    final nodes2 = parser2.parse();
+    expect(nodes2.length, 1);
+    final el2 = nodes2.first as md.Element;
+    expect(el2.tag, 'annobadge');
+    expect(el2.attributes['id'], 'n-456');
+    expect(el2.attributes['type'], 'note');
+  });
+
+  test('Note and Highlight independence test', () {
+    final noteAnno = PdfAnnotation(
+      id: 'n-1',
+      docId: 'doc-1',
+      type: 'note',
+      pageNumber: 1,
+      colorHex: '#6366F1',
+      rects: const [],
+      selectedText: 'Some referenced sentence',
+      noteContent: 'User thoughts on this paragraph',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    final highlightAnno = PdfAnnotation(
+      id: 'h-1',
+      docId: 'doc-1',
+      type: 'highlight',
+      pageNumber: 1,
+      colorHex: '#FDE047',
+      rects: const [],
+      selectedText: 'Highlighted words',
+      noteContent: '',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    expect(noteAnno.isNote, true);
+    expect(noteAnno.isHighlight, false);
+    expect(noteAnno.isCard, false);
+
+    expect(highlightAnno.isHighlight, true);
+    expect(highlightAnno.isNote, false);
+    expect(highlightAnno.isCard, false);
+  });
 }
+
+
 
 

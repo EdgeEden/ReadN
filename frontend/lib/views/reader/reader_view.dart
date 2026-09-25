@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -8,16 +9,17 @@ import 'package:uuid/uuid.dart';
 
 import '../../models/annotation_model.dart';
 import '../../models/document_model.dart';
+import '../../providers/ai_provider.dart';
 import '../../providers/annotation_provider.dart';
 import '../../providers/document_provider.dart';
 import '../../providers/reader_settings_provider.dart';
 import '../../theme/app_theme.dart';
-import 'components/annotation_sidebar.dart';
 import 'components/floating_selection_bar.dart';
 import 'components/markdown_reader_view.dart';
 import 'components/note_editor_dialog.dart';
 import 'components/ocr_dialog.dart';
 import 'components/page_jump_dialog.dart';
+import 'components/reader_sidebar.dart';
 import 'components/reader_top_bar.dart';
 
 class PdfActiveSelectionState {
@@ -46,7 +48,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   late DocumentModel _doc;
   int _currentPage = 1;
   int _totalPages = 0;
-  bool _isDocumentLoaded = false;
   Uint8List? _pdfBytes;
   bool _isLoadingPdf = true;
   String? _loadError;
@@ -62,6 +63,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   final GlobalKey<MarkdownReaderViewState> _markdownKey = GlobalKey<MarkdownReaderViewState>();
   double _basePdfZoom = 1.0;
   PdfActiveSelectionState? _pdfActiveSelection;
+
+  // Outline (TOC) & Search state
+  List<OutlineItem> _outlineItems = [];
+  bool _isOutlineLoading = false;
+  String _searchQuery = '';
+  List<SearchResultItem> _searchResults = [];
+  bool _isSearching = false;
 
   @override
   void initState() {
@@ -119,7 +127,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       setState(() {
         _ocrStatusInfo = statusInfo;
         if (statusInfo.isCompleted || statusInfo.status == "completed") {
-          _doc = _doc.copyWith(hasTextLayer: true, ocrStatus: "completed");
+          _doc = _doc.copyWith(hasMarkdown: true, ocrStatus: "completed");
         }
       });
 
@@ -131,10 +139,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           setState(() {
             _doc = updatedDoc;
           });
-          await _fetchPdfData();
-          if (updatedDoc.hasMarkdown) {
-            _fetchMarkdownData(forceReload: true);
-          }
+          await _fetchMarkdownData(forceReload: true);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
@@ -142,7 +147,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   children: [
                     Icon(Icons.check_circle_rounded, color: Colors.greenAccent),
                     SizedBox(width: 8),
-                    Text('OCR 任务已完成！双层 PDF 与 Markdown 已就绪。'),
+                    Text('PaddleOCR-VL 解析完成！结构化 Markdown 已就绪。'),
                   ],
                 ),
                 backgroundColor: const Color(0xFF1E293B),
@@ -181,7 +186,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         setState(() {
           _markdownContent = content;
           _isLoadingMarkdown = false;
+          if (content.trim().isNotEmpty) {
+            _doc = _doc.copyWith(hasMarkdown: true);
+          }
         });
+        if (_outlineItems.isEmpty) {
+          _loadOutline();
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -200,25 +211,45 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       _pdfActiveSelection = null;
     });
     if (mode == ReaderViewMode.markdown) {
-      if (_markdownContent == null) {
-        _fetchMarkdownData().then((_) {
+      if (_markdownContent == null || _markdownContent!.trim().isEmpty) {
+        _fetchMarkdownData(forceReload: true).then((_) {
           if (mounted) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               _markdownKey.currentState?.jumpToPage(targetPage);
             });
+            _loadOutline();
+            if (_searchQuery.isNotEmpty) {
+              _performSearch(_searchQuery);
+            }
           }
         });
       } else {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _markdownKey.currentState?.jumpToPage(targetPage);
         });
+        _loadOutline();
+        if (_searchQuery.isNotEmpty) {
+          _performSearch(_searchQuery);
+        }
       }
     } else {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Switching to PDF mode: jump to targetPage reliably
+      void goToPdfPage(int retries) {
+        if (!mounted || _viewMode != ReaderViewMode.pdf) return;
         if (_pdfController.isReady) {
           _pdfController.goToPage(pageNumber: targetPage);
+        } else if (retries > 0) {
+          Future.delayed(const Duration(milliseconds: 50), () => goToPdfPage(retries - 1));
         }
+      }
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        goToPdfPage(8);
       });
+      _loadOutline();
+      if (_searchQuery.isNotEmpty) {
+        _performSearch(_searchQuery);
+      }
     }
   }
 
@@ -274,10 +305,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             setState(() {
               _doc = updatedDoc;
             });
-            _fetchPdfData();
-            if (updatedDoc.hasMarkdown) {
-              _fetchMarkdownData(forceReload: true);
-            }
+            _fetchMarkdownData(forceReload: true);
           }
         },
       ),
@@ -289,6 +317,53 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       setState(() => _currentPage = page);
       context.read<DocumentProvider>().storageService.setLastReadPage(_doc.id, page);
     }
+  }
+
+  void _handleAskAi(String text, int pageNumber) {
+    if (text.trim().isEmpty) return;
+    final aiProv = context.read<AiProvider>();
+    aiProv.setPendingQuote(text.trim(), pageNumber: pageNumber);
+
+    // Automatically reveal the AI Chat sidebar
+    final settings = context.read<ReaderSettingsProvider>();
+    settings.openTab(ReaderSidebarTab.aiChat);
+  }
+
+  Future<String?> _getPageContext(int pageNumber) async {
+    // 1. If Markdown content is available, find that page chunk
+    if (_markdownContent != null && _markdownContent!.isNotEmpty) {
+      final pageRegex = RegExp(r'<!--\s*Page\s+(\d+)\s*-->', caseSensitive: false);
+      final matches = pageRegex.allMatches(_markdownContent!).toList();
+      if (matches.isNotEmpty) {
+        for (int i = 0; i < matches.length; i++) {
+          final m = matches[i];
+          final pNum = int.tryParse(m.group(1) ?? '') ?? (i + 1);
+          if (pNum == pageNumber) {
+            final start = m.end;
+            final end = (i + 1 < matches.length) ? matches[i + 1].start : _markdownContent!.length;
+            final chunk = _markdownContent!.substring(start, end).trim();
+            if (chunk.isNotEmpty) return chunk;
+          }
+        }
+      } else {
+        return _markdownContent;
+      }
+    }
+
+    // 2. If in PDF mode and pdfController is ready, extract page text
+    if (_pdfController.isReady && pageNumber >= 1 && pageNumber <= _totalPages) {
+      try {
+        final pageText = await _pdfController.document.pages[pageNumber - 1].loadText();
+        final text = pageText?.fullText.trim();
+        if (text != null && text.isNotEmpty) {
+          return text;
+        }
+      } catch (e) {
+        debugPrint('Error loading PDF page text for AI context: $e');
+      }
+    }
+
+    return null;
   }
 
   void _onJumpToPage(int page) {
@@ -303,6 +378,326 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     } else {
       _saveCurrentPage(page);
       _markdownKey.currentState?.jumpToPage(page);
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Outline (TOC) Extraction & Mapping (Adapts to Active Mode)
+  // -------------------------------------------------------------
+  Future<void> _loadOutline() async {
+    if (!mounted) return;
+    setState(() => _isOutlineLoading = true);
+
+    if (_viewMode == ReaderViewMode.markdown) {
+      if (_markdownContent != null && _markdownContent!.isNotEmpty) {
+        final items = _parseMarkdownHeadings(_markdownContent!);
+        if (items.isNotEmpty) {
+          if (mounted) {
+            setState(() {
+              _outlineItems = items;
+              _isOutlineLoading = false;
+            });
+            return;
+          }
+        }
+      }
+      try {
+        if (_pdfController.isReady) {
+          final outline = await _pdfController.document.loadOutline();
+          if (outline.isNotEmpty) {
+            final items = outline.map((node) => _mapPdfOutlineNode(node, 1)).toList();
+            if (mounted) {
+              setState(() {
+                _outlineItems = items;
+                _isOutlineLoading = false;
+              });
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('Error loading PDF outline fallback: $e');
+      }
+    } else {
+      // PDF Mode
+      try {
+        if (_pdfController.isReady) {
+          final outline = await _pdfController.document.loadOutline();
+          if (outline.isNotEmpty) {
+            final items = outline.map((node) => _mapPdfOutlineNode(node, 1)).toList();
+            if (mounted) {
+              setState(() {
+                _outlineItems = items;
+                _isOutlineLoading = false;
+              });
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('Error loading PDF outline: $e');
+      }
+
+      if (_markdownContent != null && _markdownContent!.isNotEmpty) {
+        final items = _parseMarkdownHeadings(_markdownContent!);
+        if (items.isNotEmpty) {
+          if (mounted) {
+            setState(() {
+              _outlineItems = items;
+              _isOutlineLoading = false;
+            });
+            return;
+          }
+        }
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _outlineItems = [];
+        _isOutlineLoading = false;
+      });
+    }
+  }
+
+  OutlineItem _mapPdfOutlineNode(PdfOutlineNode node, int level) {
+    return OutlineItem(
+      title: node.title,
+      pageNumber: node.dest?.pageNumber ?? 1,
+      level: level,
+      children: node.children.map((child) => _mapPdfOutlineNode(child, level + 1)).toList(),
+    );
+  }
+
+  List<OutlineItem> _parseMarkdownHeadings(String rawMarkdown) {
+    if (rawMarkdown.trim().isEmpty) return [];
+    final lines = rawMarkdown.split('\n');
+    final List<OutlineItem> headings = [];
+    int pageNum = 1;
+    final pageRegex = RegExp(r'<!--\s*Page\s+(\d+)\s*-->', caseSensitive: false);
+
+    for (final line in lines) {
+      final match = pageRegex.firstMatch(line);
+      if (match != null) {
+        pageNum = int.tryParse(match.group(1) ?? '') ?? pageNum;
+        continue;
+      }
+      final trimmed = line.trim();
+      if (trimmed.startsWith('# ') || trimmed.startsWith('## ') || trimmed.startsWith('### ') || trimmed.startsWith('#### ')) {
+        int level = 1;
+        String title = trimmed;
+        if (trimmed.startsWith('#### ')) {
+          level = 4;
+          title = trimmed.substring(5);
+        } else if (trimmed.startsWith('### ')) {
+          level = 3;
+          title = trimmed.substring(4);
+        } else if (trimmed.startsWith('## ')) {
+          level = 2;
+          title = trimmed.substring(3);
+        } else if (trimmed.startsWith('# ')) {
+          level = 1;
+          title = trimmed.substring(2);
+        }
+        headings.add(OutlineItem(
+          title: title.replaceAll(RegExp(r'[*_`#]'), '').trim(),
+          pageNumber: pageNum,
+          level: level,
+        ));
+      }
+    }
+    return headings;
+  }
+
+  // -------------------------------------------------------------
+  // Full-Text Search Implementation
+  // -------------------------------------------------------------
+  Future<List<SearchResultItem>> _searchPdfText(String query) async {
+    if (query.trim().isEmpty || !_pdfController.isReady) return [];
+    final q = query.trim().toLowerCase();
+    final List<SearchResultItem> results = [];
+
+    for (int i = 0; i < _pdfController.pages.length; i++) {
+      final page = _pdfController.pages[i];
+      final pageNum = page.pageNumber;
+      try {
+        final pageText = await page.loadText();
+        final fullText = pageText?.fullText ?? '';
+        if (fullText.isEmpty) continue;
+        final lower = fullText.toLowerCase();
+
+        int count = 0;
+        int idx = lower.indexOf(q);
+        int firstIdx = idx;
+
+        while (idx != -1) {
+          count++;
+          idx = lower.indexOf(q, idx + q.length);
+        }
+
+        if (count > 0) {
+          final snippetStart = (firstIdx - 20).clamp(0, fullText.length);
+          final snippetEnd = (firstIdx + q.length + 40).clamp(0, fullText.length);
+          final snippet = fullText.substring(snippetStart, snippetEnd).replaceAll('\n', ' ');
+
+          results.add(SearchResultItem(
+            pageNumber: pageNum,
+            matchCount: count,
+            snippet: '...$snippet...',
+          ));
+        }
+      } catch (e) {
+        // continue
+      }
+    }
+    return results;
+  }
+
+  List<SearchResultItem> _searchMarkdownText(String query) {
+    if (query.trim().isEmpty || _markdownContent == null) return [];
+    final q = query.trim().toLowerCase();
+    final List<SearchResultItem> results = [];
+    final pageRegex = RegExp(r'<!--\s*Page\s+(\d+)\s*-->', caseSensitive: false);
+    final matches = pageRegex.allMatches(_markdownContent!).toList();
+
+    if (matches.isNotEmpty) {
+      for (int i = 0; i < matches.length; i++) {
+        final currentMatch = matches[i];
+        final pageNum = int.tryParse(currentMatch.group(1) ?? '') ?? (i + 1);
+        final start = currentMatch.end;
+        final end = (i + 1 < matches.length) ? matches[i + 1].start : _markdownContent!.length;
+        final content = _markdownContent!.substring(start, end);
+        final lower = content.toLowerCase();
+
+        int count = 0;
+        int idx = lower.indexOf(q);
+        int firstIdx = idx;
+
+        while (idx != -1) {
+          count++;
+          idx = lower.indexOf(q, idx + q.length);
+        }
+
+        if (count > 0) {
+          final snippetStart = (firstIdx - 20).clamp(0, content.length);
+          final snippetEnd = (firstIdx + q.length + 40).clamp(0, content.length);
+          final snippet = content.substring(snippetStart, snippetEnd).replaceAll('\n', ' ');
+
+          results.add(SearchResultItem(
+            pageNumber: pageNum,
+            matchCount: count,
+            snippet: '...$snippet...',
+          ));
+        }
+      }
+    } else {
+      final lower = _markdownContent!.toLowerCase();
+      int count = 0;
+      int idx = lower.indexOf(q);
+      int firstIdx = idx;
+      while (idx != -1) {
+        count++;
+        idx = lower.indexOf(q, idx + q.length);
+      }
+      if (count > 0) {
+        final snippetStart = (firstIdx - 20).clamp(0, _markdownContent!.length);
+        final snippetEnd = (firstIdx + q.length + 40).clamp(0, _markdownContent!.length);
+        final snippet = _markdownContent!.substring(snippetStart, snippetEnd).replaceAll('\n', ' ');
+        results.add(SearchResultItem(
+          pageNumber: 1,
+          matchCount: count,
+          snippet: '...$snippet...',
+        ));
+      }
+    }
+    return results;
+  }
+
+  void _onSearchQueryChanged(String query) {
+    setState(() {
+      _searchQuery = query;
+      if (query.trim().isEmpty) {
+        _searchResults = [];
+        _isSearching = false;
+        return;
+      }
+    });
+
+    _performSearch(query);
+  }
+
+  Future<void> _performSearch(String query) async {
+    if (query.trim().isEmpty) return;
+    setState(() => _isSearching = true);
+
+    List<SearchResultItem> results = [];
+    if (_viewMode == ReaderViewMode.pdf && _pdfController.isReady) {
+      results = await _searchPdfText(query);
+      if (results.isEmpty && _markdownContent != null && _markdownContent!.isNotEmpty) {
+        results = _searchMarkdownText(query);
+      }
+    } else {
+      results = _searchMarkdownText(query);
+      if (results.isEmpty && _pdfController.isReady) {
+        results = await _searchPdfText(query);
+      }
+    }
+
+    if (mounted && _searchQuery == query) {
+      setState(() {
+        _searchResults = results;
+        _isSearching = false;
+      });
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Zoom & Scale Actions
+  // -------------------------------------------------------------
+  void _handleZoomIn() {
+    final settings = context.read<ReaderSettingsProvider>();
+    if (_viewMode == ReaderViewMode.pdf) {
+      if (_pdfController.isReady) {
+        final currentRatio = _basePdfZoom > 0 ? (_pdfController.currentZoom / _basePdfZoom) : _pdfController.currentZoom;
+        final targetRatio = (currentRatio * 1.20).clamp(0.5, 4.0);
+        _pdfController.setZoom(_pdfController.centerPosition, _basePdfZoom * targetRatio);
+        settings.setZoomScale(targetRatio);
+      }
+    } else {
+      settings.setZoomScale((settings.zoomScale * 1.20).clamp(0.5, 4.0));
+    }
+  }
+
+  void _handleZoomOut() {
+    final settings = context.read<ReaderSettingsProvider>();
+    if (_viewMode == ReaderViewMode.pdf) {
+      if (_pdfController.isReady) {
+        final currentRatio = _basePdfZoom > 0 ? (_pdfController.currentZoom / _basePdfZoom) : _pdfController.currentZoom;
+        final targetRatio = (currentRatio / 1.20).clamp(0.5, 4.0);
+        _pdfController.setZoom(_pdfController.centerPosition, _basePdfZoom * targetRatio);
+        settings.setZoomScale(targetRatio);
+      }
+    } else {
+      settings.setZoomScale((settings.zoomScale / 1.20).clamp(0.5, 4.0));
+    }
+  }
+
+  void _handleResetZoom() {
+    final settings = context.read<ReaderSettingsProvider>();
+    if (_viewMode == ReaderViewMode.pdf && _pdfController.isReady) {
+      if (_basePdfZoom > 0) {
+        _pdfController.setZoom(_pdfController.centerPosition, _basePdfZoom);
+      }
+    }
+    settings.setZoomScale(1.0);
+  }
+
+  void _handleFitWidth() {
+    if (_pdfController.isReady) {
+      final m = _pdfController.calcMatrixFitWidthForPage(pageNumber: _currentPage);
+      if (m != null) {
+        _pdfController.goTo(m);
+      }
     }
   }
 
@@ -354,7 +749,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     required String colorHex,
     required String selectedText,
     required List<PdfPageTextRange> textRanges,
-    String noteContent = "",
   }) {
     if (textRanges.isEmpty) return;
 
@@ -379,18 +773,124 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     final newAnno = PdfAnnotation(
       id: _uuid.v4(),
       docId: widget.document.id,
-      type: noteContent.isNotEmpty ? "note" : "highlight",
+      type: "highlight",
       pageNumber: pageNumber,
       colorHex: colorHex,
       rects: normalizedRects,
-      selectedText: selectedText,
-      noteContent: noteContent,
+      selectedText: selectedText.trim(),
+      noteContent: "",
       createdAt: DateTime.now(),
       updatedAt: DateTime.now(),
     );
 
     context.read<AnnotationProvider>().addAnnotation(newAnno);
     context.read<DocumentProvider>().updateAnnotationCount(widget.document.id, 1);
+  }
+
+  void _createNoteFromSelection({
+    required String selectedText,
+    required List<PdfPageTextRange> textRanges,
+    required String noteContent,
+  }) {
+    if (textRanges.isEmpty || noteContent.trim().isEmpty) return;
+
+    final firstRange = textRanges.first;
+    final pageNumber = firstRange.pageNumber;
+    if (!_pdfController.isReady || pageNumber > _pdfController.pages.length) return;
+
+    final page = _pdfController.pages[pageNumber - 1];
+    final List<NormalizedRect> normalizedRects = [];
+
+    for (final range in textRanges) {
+      final bounds = range.bounds;
+      final norm = NormalizedRect(
+        x: bounds.left / page.width,
+        y: bounds.bottom / page.height,
+        width: bounds.width / page.width,
+        height: bounds.height / page.height,
+      );
+      normalizedRects.add(norm);
+    }
+
+    final newAnno = PdfAnnotation(
+      id: _uuid.v4(),
+      docId: widget.document.id,
+      type: "note",
+      pageNumber: pageNumber,
+      colorHex: "#6366F1",
+      rects: normalizedRects,
+      selectedText: selectedText.trim(),
+      noteContent: noteContent.trim(),
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    context.read<AnnotationProvider>().addAnnotation(newAnno);
+    context.read<DocumentProvider>().updateAnnotationCount(widget.document.id, 1);
+  }
+
+  String _removeHighlightFromMarkdown(String markdown, String targetText) {
+    if (markdown.trim().isEmpty || targetText.trim().isEmpty) return markdown;
+
+    var result = markdown;
+    final trimmed = targetText.trim();
+    final escaped = RegExp.escape(trimmed);
+
+    // 1. Direct Markdown highlight: ==[#HEX]target== or ==target==
+    final directRegex = RegExp(
+      r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*' + escaped + r'\s*==',
+    );
+    if (directRegex.hasMatch(result)) {
+      result = result.replaceAllMapped(directRegex, (_) => trimmed);
+    }
+
+    // 2. HTML mark tag: <mark ...>target</mark>
+    final htmlMarkRegex = RegExp(
+      r'<mark(?:\s+[^>]*)?>\s*' + escaped + r'\s*</mark>',
+      caseSensitive: false,
+    );
+    if (htmlMarkRegex.hasMatch(result)) {
+      result = result.replaceAllMapped(htmlMarkRegex, (_) => trimmed);
+    }
+
+    // 3. Mathematical formulas with / without delimiters ($...$, $$...$$, ```latex...```)
+    final strippedFormula = trimmed.replaceAll(RegExp(r'^(\$\$|\$)|(\$\$|\$)$'), '').trim();
+    if (strippedFormula.isNotEmpty) {
+      final escapedStripped = RegExp.escape(strippedFormula);
+      final formulaHighlightRegex = RegExp(
+        r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*((\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
+            escapedStripped +
+            r'\s*(\$\$|\$|\\\]|\\\)|\n?```))\s*==',
+      );
+      if (formulaHighlightRegex.hasMatch(result)) {
+        result = result.replaceAllMapped(formulaHighlightRegex, (m) => m.group(1) ?? strippedFormula);
+      }
+    }
+
+    return result;
+  }
+
+  void _handleDeleteAnnotation(PdfAnnotation anno) async {
+    final docProvider = context.read<DocumentProvider>();
+    final annoProvider = context.read<AnnotationProvider>();
+
+    await annoProvider.deleteAnnotation(anno.id);
+    docProvider.updateAnnotationCount(_doc.id, -1);
+
+    if (_markdownContent != null && _markdownContent!.isNotEmpty && anno.selectedText.trim().isNotEmpty) {
+      final text = anno.selectedText.trim();
+      final updatedMd = _removeHighlightFromMarkdown(_markdownContent!, text);
+      if (updatedMd != _markdownContent) {
+        setState(() {
+          _markdownContent = updatedMd;
+        });
+        try {
+          await docProvider.saveMarkdown(_doc.id, updatedMd);
+        } catch (e) {
+          debugPrint('Error saving markdown after deleting annotation: $e');
+        }
+      }
+    }
   }
 
   void _paintPageAnnotations(Canvas canvas, Rect pageRect, PdfPage page, {bool isDark = false}) {
@@ -439,7 +939,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         }
       }
 
-      if (anno.isNote && anno.rects.isNotEmpty) {
+      if ((anno.isCard || anno.isNote) && anno.rects.isNotEmpty) {
         final firstNorm = anno.rects.first;
         final pdfRect = PdfRect(
           firstNorm.x * page.width,
@@ -449,22 +949,211 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         );
         final firstScreenRect = pdfRect.toRectInDocument(page: page, pageRect: pageRect);
 
-        final pinCenter = Offset(firstScreenRect.right + 4, firstScreenRect.top);
-        final pinPaint = Paint()
-          ..color = AppTheme.getHighlightColorForRendering(anno.colorHex, isDark: isDark, alpha: 1.0)
-          ..style = PaintingStyle.fill;
+        final pinCenter = Offset(firstScreenRect.right + 6, firstScreenRect.top + 2);
+        final baseColor = AppTheme.parseHexColor(anno.colorHex);
 
-        canvas.drawCircle(pinCenter, 5.0, pinPaint);
-        canvas.drawCircle(
-          pinCenter,
-          5.0,
-          Paint()
-            ..color = isDark ? Colors.white70 : Colors.black45
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.0,
-        );
+        if (anno.isCard) {
+          final badgeRect = Rect.fromCenter(center: pinCenter, width: 14, height: 14);
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(badgeRect, const Radius.circular(4)),
+            Paint()
+              ..color = baseColor
+              ..style = PaintingStyle.fill,
+          );
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(badgeRect, const Radius.circular(4)),
+            Paint()
+              ..color = isDark ? Colors.white70 : Colors.black38
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.0,
+          );
+        } else {
+          canvas.drawCircle(
+            pinCenter,
+            5.0,
+            Paint()
+              ..color = baseColor
+              ..style = PaintingStyle.fill,
+          );
+          canvas.drawCircle(
+            pinCenter,
+            5.0,
+            Paint()
+              ..color = isDark ? Colors.white70 : Colors.black45
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.0,
+          );
+        }
       }
     }
+  }
+
+  Widget _buildCollapsedRail(
+    SidebarDockPosition position,
+    ReaderSettingsProvider settings,
+    bool isDark,
+    ThemeData theme,
+  ) {
+    final isLeft = position == SidebarDockPosition.left;
+    final dockedTabs = isLeft ? settings.leftDockedTabs : settings.rightDockedTabs;
+    final totalPages = _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1);
+
+    return Container(
+      width: 48,
+      decoration: BoxDecoration(
+        color: theme.cardTheme.color,
+        border: Border(
+          left: isLeft ? BorderSide.none : BorderSide(color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+          right: isLeft ? BorderSide(color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)) : BorderSide.none,
+        ),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 8),
+          // Tab shortcut icons
+          ...dockedTabs.map((tab) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: IconButton(
+                icon: Icon(tab.icon, size: 18),
+                tooltip: '展开 ${tab.label}',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                onPressed: () {
+                  if (isLeft) {
+                    settings.setActiveLeftTab(tab);
+                    settings.setLeftSidebarOpen(true);
+                  } else {
+                    settings.setActiveRightTab(tab);
+                    settings.setRightSidebarOpen(true);
+                  }
+                },
+              ),
+            );
+          }),
+          const Spacer(),
+
+          // If left rail: Show compact page jump & zoom controls even when collapsed
+          if (isLeft) ...[
+            // 1. Page Navigation
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 18),
+              tooltip: '上一页 (P.${_currentPage > 1 ? _currentPage - 1 : 1})',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
+              onPressed: _currentPage > 1 ? () => _onJumpToPage(_currentPage - 1) : null,
+            ),
+            Tooltip(
+              message: '点击跳转页面 (共 $totalPages 页)',
+              child: InkWell(
+                onTap: () {
+                  showDialog(
+                    context: context,
+                    builder: (_) => PageJumpDialog(
+                      currentPage: _currentPage,
+                      totalPages: totalPages,
+                      onJump: _onJumpToPage,
+                    ),
+                  );
+                },
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withValues(alpha: isDark ? 0.2 : 0.1),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: theme.colorScheme.primary.withValues(alpha: 0.35),
+                    ),
+                  ),
+                  child: Text(
+                    '$_currentPage',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
+              tooltip: '下一页 (P.${_currentPage < totalPages ? _currentPage + 1 : totalPages})',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
+              onPressed: _currentPage < totalPages ? () => _onJumpToPage(_currentPage + 1) : null,
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Divider(
+                height: 1,
+                thickness: 1,
+                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+              ),
+            ),
+
+            // 2. Zoom Controls
+            IconButton(
+              icon: const Icon(Icons.add_rounded, size: 16),
+              tooltip: '放大 (20%)',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
+              onPressed: _handleZoomIn,
+            ),
+            Tooltip(
+              message: '点击重置缩放 (100%)',
+              child: InkWell(
+                onTap: _handleResetZoom,
+                borderRadius: BorderRadius.circular(5),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child: Text(
+                    '${(settings.zoomScale * 100).toInt()}%',
+                    style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.remove_rounded, size: 16),
+              tooltip: '缩小 (20%)',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
+              onPressed: _handleZoomOut,
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Divider(
+                height: 1,
+                thickness: 1,
+                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+              ),
+            ),
+          ],
+
+          // Expand Sidebar Button
+          IconButton(
+            icon: Icon(isLeft ? Icons.chevron_right_rounded : Icons.chevron_left_rounded, size: 20),
+            tooltip: isLeft ? '展开左边栏' : '展开右边栏',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            onPressed: () {
+              if (isLeft) {
+                settings.setLeftSidebarOpen(true);
+              } else {
+                settings.setRightSidebarOpen(true);
+              }
+            },
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
   }
 
   @override
@@ -512,42 +1201,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                 onOpenOcr: _showOcrDialog,
                 viewMode: _viewMode,
                 onViewModeChanged: _onViewModeChanged,
-                hasMarkdown: _doc.hasMarkdown,
-                onZoomIn: () {
-                  if (_viewMode == ReaderViewMode.pdf) {
-                    if (_pdfController.isReady) {
-                      final currentRatio = _basePdfZoom > 0 ? (_pdfController.currentZoom / _basePdfZoom) : _pdfController.currentZoom;
-                      final targetRatio = (currentRatio * 1.20).clamp(0.5, 4.0);
-                      _pdfController.setZoom(_pdfController.centerPosition, _basePdfZoom * targetRatio);
-                      settings.setZoomScale(targetRatio);
-                    }
-                  } else {
-                    settings.setZoomScale((settings.zoomScale * 1.20).clamp(0.5, 4.0));
-                  }
-                },
-                onZoomOut: () {
-                  if (_viewMode == ReaderViewMode.pdf) {
-                    if (_pdfController.isReady) {
-                      final currentRatio = _basePdfZoom > 0 ? (_pdfController.currentZoom / _basePdfZoom) : _pdfController.currentZoom;
-                      final targetRatio = (currentRatio / 1.20).clamp(0.5, 4.0);
-                      _pdfController.setZoom(_pdfController.centerPosition, _basePdfZoom * targetRatio);
-                      settings.setZoomScale(targetRatio);
-                    }
-                  } else {
-                    settings.setZoomScale((settings.zoomScale / 1.20).clamp(0.5, 4.0));
-                  }
-                },
-                onResetZoom: () {
-                  if (_viewMode == ReaderViewMode.pdf && _pdfController.isReady) {
-                    final m = _pdfController.calcMatrixFitWidthForPage(pageNumber: _currentPage);
-                    if (m != null) {
-                      _pdfController.goTo(m);
-                    } else if (_basePdfZoom > 0) {
-                      _pdfController.setZoom(_pdfController.centerPosition, _basePdfZoom);
-                    }
-                  }
-                  settings.setZoomScale(1.0);
-                },
+                hasMarkdown: _doc.hasMarkdown || (_markdownContent != null && _markdownContent!.trim().isNotEmpty),
+                onZoomIn: _handleZoomIn,
+                onZoomOut: _handleZoomOut,
+                onResetZoom: _handleResetZoom,
                 onPrevPage: () {
                   if (_currentPage > 1) {
                     _onJumpToPage(_currentPage - 1);
@@ -560,7 +1217,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                 },
               ),
 
-              // Scanned / Image PDF OCR Banner (Only when not started and text layer missing, and in PDF view)
+              // Scanned / Image PDF OCR Banner
               if (_viewMode == ReaderViewMode.pdf && !_doc.hasTextLayer && _doc.ocrStatus != 'completed' && _doc.ocrStatus != 'processing' && !_isOcrBannerDismissed)
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -578,7 +1235,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                       const SizedBox(width: 10),
                       const Expanded(
                         child: Text(
-                          '提示：当前为扫描版/纯图片 PDF，暂无内嵌文字。一键转换为双层可检索 PDF (OCR) 即可开启鼠标划词与荧光高亮！',
+                          '提示：当前为扫描版/纯图片 PDF。可使用百度 PaddleOCR-VL 提取结构化 Markdown、数学公式与表格排版！',
                           style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
                         ),
                       ),
@@ -588,8 +1245,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                           textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                           visualDensity: VisualDensity.compact,
                         ),
-                        icon: const Icon(Icons.play_arrow_rounded, size: 16),
-                        label: const Text('生成双层PDF'),
+                        icon: const Icon(Icons.auto_awesome_rounded, size: 16),
+                        label: const Text('OCR 提取 Markdown'),
                         onPressed: _showOcrDialog,
                       ),
                       const SizedBox(width: 8),
@@ -604,201 +1261,162 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   ),
                 ),
 
-              // Main Viewer Area (PDF Canvas or Markdown View)
+              // Main Viewer & Flexible Sidebars (Left / Main / Right)
               Expanded(
                 child: Row(
                   children: [
-                    // Main Viewer Body
-                    Expanded(
-                      child: _viewMode == ReaderViewMode.pdf
-                          ? Stack(
-                              children: [
-                                if (_isLoadingPdf)
-                                  Center(
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
-                                      decoration: BoxDecoration(
-                                        color: activeTheme.cardTheme.color,
-                                        borderRadius: BorderRadius.circular(20),
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: Colors.black.withValues(alpha: isDark ? 0.4 : 0.08),
-                                            blurRadius: 20,
-                                            offset: const Offset(0, 8),
-                                          ),
-                                        ],
-                                      ),
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          SizedBox(
-                                            width: 44,
-                                            height: 44,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 3,
-                                              valueColor: AlwaysStoppedAnimation<Color>(
-                                                activeTheme.colorScheme.primary,
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(height: 18),
-                                          Text(
-                                            '正在载入《${widget.document.title}》...',
-                                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                                          ),
-                                          const SizedBox(height: 6),
-                                          Text(
-                                            '文件大小 ${widget.document.formattedSize} • 正在准备 WebAssembly 渲染',
-                                            style: const TextStyle(fontSize: 12, color: Colors.grey),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  )
-                                else if (_loadError != null)
-                                  Center(
-                                    child: Container(
-                                      padding: const EdgeInsets.all(28),
-                                      decoration: BoxDecoration(
-                                        color: activeTheme.cardTheme.color,
-                                        borderRadius: BorderRadius.circular(20),
-                                        border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: Colors.black.withValues(alpha: 0.08),
-                                            blurRadius: 16,
-                                            offset: const Offset(0, 4),
-                                          ),
-                                        ],
-                                      ),
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(Icons.error_outline_rounded, color: Colors.red, size: 48),
-                                          const SizedBox(height: 14),
-                                          const Text(
-                                            '文档加载失败',
-                                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          Text('错误原因: $_loadError', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                                          const SizedBox(height: 18),
-                                          ElevatedButton.icon(
-                                            icon: const Icon(Icons.refresh_rounded),
-                                            label: const Text('重新载入'),
-                                            onPressed: _fetchPdfData,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  )
-                                else if (_pdfBytes != null)
-                                  _buildPdfViewer(canvasBg, pdfFilter, isDark),
+                    // 1. Left Sidebar
+                    if (settings.isLeftSidebarOpen && settings.leftDockedTabs.isNotEmpty)
+                      ReaderSidebar(
+                        position: SidebarDockPosition.left,
+                        outlineItems: _outlineItems,
+                        isOutlineLoading: _isOutlineLoading,
+                        searchQuery: _searchQuery,
+                        searchResults: _searchResults,
+                        isSearching: _isSearching,
+                        onSearchChanged: _onSearchQueryChanged,
+                        onClearSearch: () => setState(() {
+                          _searchQuery = '';
+                          _searchResults = [];
+                        }),
+                        onJumpToPage: _onJumpToPage,
+                        currentPage: _currentPage,
+                        totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                        documentTitle: _doc.title,
+                        docId: _doc.id,
+                        onGetPageContext: _getPageContext,
+                        onZoomIn: _handleZoomIn,
+                        onZoomOut: _handleZoomOut,
+                        onResetZoom: _handleResetZoom,
+                        onFitWidth: _handleFitWidth,
+                        onDeleteAnnotation: _handleDeleteAnnotation,
+                      )
+                    else
+                      _buildCollapsedRail(SidebarDockPosition.left, settings, isDark, activeTheme),
 
-                                // Bottom Floating Capsule Toolbar (PDF Mode)
-                                if (_isDocumentLoaded && _totalPages > 0)
-                                  Positioned(
-                                    bottom: 24,
-                                    left: 0,
-                                    right: 0,
-                                    child: Center(
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                                        decoration: BoxDecoration(
-                                          color: isDark
-                                              ? const Color(0xFF0F172A).withValues(alpha: 0.92)
-                                              : Colors.white.withValues(alpha: 0.92),
-                                          borderRadius: BorderRadius.circular(30),
-                                          border: Border.all(
-                                            color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                                            width: 1.2,
+                    // 2. Main Document Viewer Body (IndexedStack preserves viewer state & page layout across switches)
+                    Expanded(
+                      child: IndexedStack(
+                        index: _viewMode == ReaderViewMode.pdf ? 0 : 1,
+                        children: [
+                          Stack(
+                            children: [
+                              if (_isLoadingPdf)
+                                Center(
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+                                    decoration: BoxDecoration(
+                                      color: activeTheme.cardTheme.color,
+                                      borderRadius: BorderRadius.circular(20),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(alpha: isDark ? 0.4 : 0.08),
+                                          blurRadius: 20,
+                                          offset: const Offset(0, 8),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SizedBox(
+                                          width: 44,
+                                          height: 44,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 3,
+                                            valueColor: AlwaysStoppedAnimation<Color>(
+                                              activeTheme.colorScheme.primary,
+                                            ),
                                           ),
-                                          boxShadow: [
-                                            BoxShadow(
-                                              color: Colors.black.withValues(alpha: isDark ? 0.4 : 0.1),
-                                              blurRadius: 20,
-                                              offset: const Offset(0, 6),
-                                            ),
-                                          ],
                                         ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            IconButton(
-                                              icon: const Icon(Icons.keyboard_arrow_left_rounded, size: 22),
-                                              padding: EdgeInsets.zero,
-                                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                                              tooltip: '上一页',
-                                              onPressed: _currentPage > 1 ? () => _onJumpToPage(_currentPage - 1) : null,
-                                            ),
-                                            const SizedBox(width: 4),
-                                            InkWell(
-                                              onTap: () {
-                                                showDialog(
-                                                  context: context,
-                                                  builder: (_) => PageJumpDialog(
-                                                    currentPage: _currentPage,
-                                                    totalPages: _totalPages,
-                                                    onJump: _onJumpToPage,
-                                                  ),
-                                                );
-                                              },
-                                              borderRadius: BorderRadius.circular(12),
-                                              child: Padding(
-                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                                child: Text(
-                                                  '$_currentPage / $_totalPages 页',
-                                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 4),
-                                            IconButton(
-                                              icon: const Icon(Icons.keyboard_arrow_right_rounded, size: 22),
-                                              padding: EdgeInsets.zero,
-                                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                                              tooltip: '下一页',
-                                              onPressed: _currentPage < _totalPages ? () => _onJumpToPage(_currentPage + 1) : null,
-                                            ),
-                                            Container(
-                                              margin: const EdgeInsets.symmetric(horizontal: 8),
-                                              width: 1,
-                                              height: 18,
-                                              color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                                            ),
-                                            IconButton(
-                                              icon: const Icon(Icons.fit_screen_rounded, size: 18),
-                                              padding: EdgeInsets.zero,
-                                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                                              tooltip: '适应宽度',
-                                              onPressed: () {
-                                                if (_pdfController.isReady) {
-                                                  final m = _pdfController.calcMatrixFitWidthForPage(pageNumber: _currentPage);
-                                                  if (m != null) {
-                                                    _pdfController.goTo(m);
-                                                  }
-                                                }
-                                              },
-                                            ),
-                                          ],
+                                        const SizedBox(height: 18),
+                                        Text(
+                                          '正在载入《${widget.document.title}》...',
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                                         ),
-                                      ),
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          '文件大小 ${widget.document.formattedSize} • 正在准备 WebAssembly 渲染',
+                                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                        ),
+                                      ],
                                     ),
                                   ),
-                              ],
-                            )
-                          : _buildMarkdownContent(context, activeTheme, isDark),
+                                )
+                              else if (_loadError != null)
+                                Center(
+                                  child: Container(
+                                    padding: const EdgeInsets.all(28),
+                                    decoration: BoxDecoration(
+                                      color: activeTheme.cardTheme.color,
+                                      borderRadius: BorderRadius.circular(20),
+                                      border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(alpha: 0.08),
+                                          blurRadius: 16,
+                                          offset: const Offset(0, 4),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.error_outline_rounded, color: Colors.red, size: 48),
+                                        const SizedBox(height: 14),
+                                        const Text(
+                                          '文档加载失败',
+                                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text('错误原因: $_loadError', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                                        const SizedBox(height: 18),
+                                        ElevatedButton.icon(
+                                          icon: const Icon(Icons.refresh_rounded),
+                                          label: const Text('重新载入'),
+                                          onPressed: _fetchPdfData,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                )
+                              else if (_pdfBytes != null)
+                                _buildPdfViewer(canvasBg, pdfFilter, isDark),
+                            ],
+                          ),
+                          _buildMarkdownContent(context, activeTheme, isDark),
+                        ],
+                      ),
                     ),
 
-                    // Right Drawer: Annotations
-                    if (settings.isSidebarOpen)
-                      AnnotationSidebar(
-                        onJumpToPage: (page) {
-                          if (_viewMode == ReaderViewMode.pdf) {
-                            _onJumpToPage(page);
-                          }
-                        },
-                      ),
+                    // 3. Right Sidebar
+                    if (settings.isRightSidebarOpen && settings.rightDockedTabs.isNotEmpty)
+                      ReaderSidebar(
+                        position: SidebarDockPosition.right,
+                        outlineItems: _outlineItems,
+                        isOutlineLoading: _isOutlineLoading,
+                        searchQuery: _searchQuery,
+                        searchResults: _searchResults,
+                        isSearching: _isSearching,
+                        onSearchChanged: _onSearchQueryChanged,
+                        onClearSearch: () => setState(() {
+                          _searchQuery = '';
+                          _searchResults = [];
+                        }),
+                        onJumpToPage: _onJumpToPage,
+                        currentPage: _currentPage,
+                        totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                        documentTitle: _doc.title,
+                        docId: _doc.id,
+                        onGetPageContext: _getPageContext,
+                        onZoomIn: _handleZoomIn,
+                        onZoomOut: _handleZoomOut,
+                        onResetZoom: _handleResetZoom,
+                        onFitWidth: _handleFitWidth,
+                        onDeleteAnnotation: _handleDeleteAnnotation,
+                      )
+                    else if (!settings.isRightSidebarOpen && settings.rightDockedTabs.isNotEmpty)
+                      _buildCollapsedRail(SidebarDockPosition.right, settings, isDark, activeTheme),
                   ],
                 ),
               ),
@@ -820,6 +1438,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       params: PdfViewerParams(
         backgroundColor: Colors.transparent,
         margin: 16.0,
+        calculateInitialPageNumber: (document, controller) => _currentPage.clamp(1, max(1, document.pages.length)),
         pageDropShadow: isDark
             ? const BoxShadow(color: Colors.transparent)
             : (settings.readingMode == ReadingMode.sepia
@@ -853,7 +1472,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           },
         ),
         onPageChanged: (pageNumber) {
-          if (pageNumber != null) {
+          if (pageNumber != null && _viewMode == ReaderViewMode.pdf) {
             _saveCurrentPage(pageNumber);
           }
         },
@@ -861,15 +1480,17 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           if (mounted) {
             setState(() {
               _totalPages = document.pages.length;
-              _isDocumentLoaded = true;
             });
             if (controller.currentZoom > 0) {
               _basePdfZoom = controller.currentZoom;
             }
             context.read<ReaderSettingsProvider>().setZoomScale(1.0);
-            if (_currentPage > 1) {
-              controller.goToPage(pageNumber: _currentPage);
-            }
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted && _currentPage > 1 && controller.isReady) {
+                controller.goToPage(pageNumber: _currentPage);
+              }
+            });
+            _loadOutline();
           }
         },
       ),
@@ -947,7 +1568,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                         final tempAnno = PdfAnnotation(
                           id: _uuid.v4(),
                           docId: widget.document.id,
+                          type: "note",
                           pageNumber: pageNum,
+                          colorHex: "#6366F1",
                           rects: const [],
                           selectedText: sel.text,
                           noteContent: "",
@@ -960,8 +1583,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                           builder: (ctx) => NoteEditorDialog(
                             annotation: tempAnno,
                             onSave: (saved) {
-                              _createHighlightFromSelection(
-                                colorHex: saved.colorHex,
+                              _createNoteFromSelection(
                                 selectedText: sel.text,
                                 textRanges: sel.ranges,
                                 noteContent: saved.noteContent,
@@ -970,6 +1592,15 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                             onDelete: () {},
                           ),
                         );
+                        _pdfController.textSelectionDelegate.clearTextSelection();
+                      }
+                    },
+                    onAskAi: () {
+                      final sel = _pdfActiveSelection;
+                      if (sel != null) {
+                        final pageNum = sel.ranges.isNotEmpty ? sel.ranges.first.pageNumber : _currentPage;
+                        setState(() => _pdfActiveSelection = null);
+                        _handleAskAi(sel.text, pageNum);
                         _pdfController.textSelectionDelegate.clearTextSelection();
                       }
                     },
@@ -1076,6 +1707,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             _markdownContent = newMd;
           });
         },
+        onAskAi: _handleAskAi,
       );
     }
 

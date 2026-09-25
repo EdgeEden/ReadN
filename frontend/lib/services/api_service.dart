@@ -137,11 +137,15 @@ class ApiService {
     String annotationId, {
     String? colorHex,
     String? noteContent,
+    String? selectedText,
+    String? type,
     List<NormalizedRect>? rects,
   }) async {
     final Map<String, dynamic> payload = {};
     if (colorHex != null) payload['color_hex'] = colorHex;
     if (noteContent != null) payload['note_content'] = noteContent;
+    if (selectedText != null) payload['selected_text'] = selectedText;
+    if (type != null) payload['type'] = type;
     if (rects != null) payload['rects'] = rects.map((r) => r.toJson()).toList();
 
     final res = await _client.put(
@@ -189,36 +193,25 @@ class ApiService {
     }
   }
 
-  // OCR Dual-Layer PDF Conversion
+  // OCR Dual-Layer PDF & Markdown Conversion (Baidu AI Studio PaddleOCR-VL)
   Future<Map<String, dynamic>> startOcr(
     String docId, {
-    String engine = "adobe",
-    String? adobeClientId,
-    String? adobeClientSecret,
-    String adobeLocale = "zh-CN",
-    String adobeType = "searchable_image_exact",
     String? apiToken,
     String? apiUrl,
     String? modelName,
     String pageScope = "all",
     List<int>? targetPages,
-    String languages = "chi_sim+eng+equ",
     bool useDocOrientationClassify = false,
     bool useDocUnwarping = false,
     bool useChartRecognition = false,
   }) async {
     final payload = {
-      'engine': engine,
-      'adobe_client_id': adobeClientId,
-      'adobe_client_secret': adobeClientSecret,
-      'adobe_locale': adobeLocale,
-      'adobe_type': adobeType,
+      'engine': 'paddleocr_vl',
       'api_token': apiToken,
       'api_url': apiUrl,
       'model_name': modelName,
       'page_scope': pageScope,
       'target_pages': targetPages,
-      'languages': languages,
       'use_doc_orientation_classify': useDocOrientationClassify,
       'use_doc_unwarping': useDocUnwarping,
       'use_chart_recognition': useChartRecognition,

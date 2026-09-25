@@ -123,6 +123,8 @@ class AnnotationProvider extends ChangeNotifier {
     String annoId, {
     String? colorHex,
     String? noteContent,
+    String? selectedText,
+    String? type,
     List<NormalizedRect>? rects,
   }) async {
     if (_currentDocId == null) return false;
@@ -133,6 +135,8 @@ class AnnotationProvider extends ChangeNotifier {
     final updated = orig.copyWith(
       colorHex: colorHex,
       noteContent: noteContent,
+      selectedText: selectedText,
+      type: type,
       rects: rects,
       updatedAt: DateTime.now(),
     );
@@ -148,6 +152,8 @@ class AnnotationProvider extends ChangeNotifier {
         annoId,
         colorHex: colorHex,
         noteContent: noteContent,
+        selectedText: selectedText,
+        type: type,
         rects: rects,
       );
       return true;
@@ -155,6 +161,17 @@ class AnnotationProvider extends ChangeNotifier {
       debugPrint("Failed to update annotation on cloud: $e");
       return false;
     }
+  }
+
+  Future<bool> updateAnnotationModel(PdfAnnotation anno) async {
+    return updateAnnotation(
+      anno.id,
+      colorHex: anno.colorHex,
+      noteContent: anno.noteContent,
+      selectedText: anno.selectedText,
+      type: anno.type,
+      rects: anno.rects,
+    );
   }
 
   Future<bool> deleteAnnotation(String annoId) async {

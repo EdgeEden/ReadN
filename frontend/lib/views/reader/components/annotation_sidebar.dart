@@ -364,27 +364,43 @@ class _AnnotationSidebarState extends State<AnnotationSidebar> {
                                 if (anno.selectedText.isNotEmpty)
                                   Container(
                                     width: double.infinity,
-                                    padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
-                                      color: AppTheme.parseHexColor(anno.colorHex, alpha: 0.15),
+                                      color: AppTheme.parseHexColor(anno.colorHex, alpha: 0.12),
                                       borderRadius: BorderRadius.circular(8),
-                                      border: Border(
-                                        left: BorderSide(
-                                          color: AppTheme.parseHexColor(anno.colorHex),
-                                          width: 3.5,
-                                        ),
+                                      border: Border.all(
+                                        color: AppTheme.parseHexColor(anno.colorHex, alpha: 0.3),
+                                        width: 0.8,
                                       ),
                                     ),
-                                    child: Text(
-                                      '“${anno.selectedText}”',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontStyle: FontStyle.italic,
-                                        height: 1.4,
-                                        color: theme.colorScheme.onSurface.withValues(alpha: 0.9),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(7),
+                                      child: IntrinsicHeight(
+                                        child: Row(
+                                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                                          children: [
+                                            Container(
+                                              width: 3.5,
+                                              color: AppTheme.parseHexColor(anno.colorHex),
+                                            ),
+                                            Expanded(
+                                              child: Padding(
+                                                padding: const EdgeInsets.all(8),
+                                                child: Text(
+                                                  '“${anno.selectedText}”',
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    fontStyle: FontStyle.italic,
+                                                    height: 1.4,
+                                                    color: theme.colorScheme.onSurface.withValues(alpha: 0.9),
+                                                  ),
+                                                  maxLines: 3,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
-                                      maxLines: 3,
-                                      overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
                                 // Note content if present

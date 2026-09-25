@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../models/document_model.dart';
-import '../../../providers/annotation_provider.dart';
 import '../../../providers/reader_settings_provider.dart';
 import '../../../theme/app_theme.dart';
-import 'page_jump_dialog.dart';
 
 enum ReaderViewMode {
   pdf,
@@ -45,27 +43,15 @@ class ReaderTopBar extends StatelessWidget {
     this.hasMarkdown = false,
   });
 
-  void _showJumpDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (_) => PageJumpDialog(
-        currentPage: currentPage,
-        totalPages: totalPages > 0 ? totalPages : 1,
-        onJump: onJumpToPage,
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<ReaderSettingsProvider>();
-    final annoProvider = context.watch<AnnotationProvider>();
     final theme = Theme.of(context);
     final isDark = settings.readingMode == ReadingMode.dark;
 
     return Container(
-      height: 60,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      height: 56,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
       decoration: BoxDecoration(
         color: theme.appBarTheme.backgroundColor,
         border: Border(
@@ -84,9 +70,9 @@ class ReaderTopBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Back to bookshelf button
+          // 1. Back to Bookshelf
           InkWell(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(10),
             onTap: () => Navigator.of(context).pop(),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -100,41 +86,41 @@ class ReaderTopBar extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.arrow_back_rounded, size: 18, color: theme.colorScheme.primary),
+                  Icon(Icons.arrow_back_rounded, size: 16, color: theme.colorScheme.primary),
                   const SizedBox(width: 4),
                   const Text(
                     '书架',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                   ),
                 ],
               ),
             ),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 12),
 
-          // Document Title with Gradient Tag
+          // 2. Document Title
           Expanded(
             child: Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.all(6),
+                  padding: const EdgeInsets.all(5),
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
                       colors: [Color(0xFFEF4444), Color(0xFFF97316)],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(7),
                   ),
-                  child: const Icon(Icons.description_rounded, color: Colors.white, size: 16),
+                  child: const Icon(Icons.description_rounded, color: Colors.white, size: 14),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Flexible(
                   child: Text(
                     document.title,
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
-                      fontSize: 15,
+                      fontSize: 14,
                       letterSpacing: -0.2,
                       color: theme.colorScheme.onSurface,
                     ),
@@ -145,116 +131,20 @@ class ReaderTopBar extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 12),
-
-          // View Mode Switcher: [ 📄 PDF | 📝 MD ]
-          _buildViewModeSwitcher(context, theme, isDark),
-          const SizedBox(width: 14),
-
-          // Center Page Navigator
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-            decoration: BoxDecoration(
-              color: theme.cardTheme.color,
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(
-                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.chevron_left_rounded, size: 20),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                  tooltip: '上一页 (Left Arrow)',
-                  onPressed: currentPage > 1 ? onPrevPage : null,
-                ),
-                InkWell(
-                  onTap: () => _showJumpDialog(context),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.primary.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      '$currentPage / ${totalPages > 0 ? totalPages : (document.pageCount > 0 ? document.pageCount : "-")}',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                        color: theme.colorScheme.primary,
-                      ),
-                    ),
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.chevron_right_rounded, size: 20),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                  tooltip: '下一页 (Right Arrow)',
-                  onPressed: (totalPages > 0 && currentPage < totalPages) || (document.pageCount > 0 && currentPage < document.pageCount)
-                      ? onNextPage
-                      : null,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 14),
-
-          // Zoom Controls
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-            decoration: BoxDecoration(
-              color: theme.cardTheme.color,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.remove_rounded, size: 18),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                  tooltip: '缩小',
-                  onPressed: onZoomOut,
-                ),
-                InkWell(
-                  onTap: onResetZoom,
-                  borderRadius: BorderRadius.circular(6),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                    child: Text(
-                      '${(settings.zoomScale * 100).toInt()}%',
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.add_rounded, size: 18),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                  tooltip: '放大',
-                  onPressed: onZoomIn,
-                ),
-              ],
-            ),
-          ),
           const SizedBox(width: 10),
 
-          // Pinned OCR Status & Action Button
-          _buildOcrButton(context, theme, isDark),
-          const SizedBox(width: 8),
+          // 3. View Mode Switcher: [ 📄 PDF | 📝 MD ]
+          _buildViewModeSwitcher(context, theme, isDark),
+          const SizedBox(width: 10),
 
-          // Reading Mode Switcher Button
+          // 4. OCR Status & Action Button
+          _buildOcrButton(context, theme, isDark),
+          const SizedBox(width: 10),
+
+          // 5. Theme Switcher Menu
           PopupMenuButton<ReadingMode>(
             tooltip: '切换阅读主题',
-            offset: const Offset(0, 48),
+            offset: const Offset(0, 44),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             icon: Container(
               padding: const EdgeInsets.all(6),
@@ -271,7 +161,7 @@ class ReaderTopBar extends StatelessWidget {
                     : settings.readingMode == ReadingMode.sepia
                         ? Icons.menu_book_rounded
                         : Icons.light_mode_rounded,
-                size: 18,
+                size: 16,
                 color: settings.readingMode == ReadingMode.sepia
                     ? const Color(0xFFD97706)
                     : theme.colorScheme.primary,
@@ -311,57 +201,6 @@ class ReaderTopBar extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(width: 8),
-
-          // Sidebar Toggle Button
-          InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () => settings.toggleSidebar(),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: settings.isSidebarOpen
-                    ? theme.colorScheme.primary.withValues(alpha: 0.15)
-                    : theme.cardTheme.color,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: settings.isSidebarOpen
-                      ? theme.colorScheme.primary
-                      : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.edit_note_rounded,
-                    size: 18,
-                    color: settings.isSidebarOpen ? theme.colorScheme.primary : null,
-                  ),
-                  const SizedBox(width: 4),
-                  const Text('批注', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                  if (annoProvider.annotations.isNotEmpty) ...[
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                      decoration: BoxDecoration(
-                        color: Colors.amber.shade700,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        '${annoProvider.annotations.length}',
-                        style: const TextStyle(
-                          fontSize: 10,
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -372,10 +211,9 @@ class ReaderTopBar extends StatelessWidget {
     final isProcessing = document.ocrStatus == "processing" || (ocrProgress != null && ocrProgress!.isProcessing);
     final isNativeText = document.hasTextLayer && !isCompleted;
 
-    // State 1: OCR Completed (Clickable to Re-OCR / Enhance target pages)
     if (isCompleted) {
       return Tooltip(
-        message: '双层可检索 PDF 已就绪。点击可对指定页面使用 PaddleOCR-VL 重新识别并合并',
+        message: 'OCR Markdown 已就绪。点击可对指定页面使用 PaddleOCR-VL 重新识别并合并',
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
           onTap: onOpenOcr,
@@ -392,10 +230,10 @@ class ReaderTopBar extends StatelessWidget {
             child: const Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.check_circle_rounded, size: 16, color: Color(0xFF10B981)),
+                Icon(Icons.check_circle_rounded, size: 15, color: Color(0xFF10B981)),
                 SizedBox(width: 5),
                 Text(
-                  '已完成 (重做/增强)',
+                  'MD 已就绪',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
@@ -409,7 +247,6 @@ class ReaderTopBar extends StatelessWidget {
       );
     }
 
-    // State 2: OCR Processing (Active Live Progress Pill with Page Count)
     if (isProcessing) {
       final currPage = ocrProgress?.currentPage ?? 0;
       final totalP = (ocrProgress?.totalPages != null && ocrProgress!.totalPages > 0)
@@ -419,18 +256,18 @@ class ReaderTopBar extends StatelessWidget {
 
       String progressLabel;
       if (currPage > 0 && totalP > 0) {
-        progressLabel = '识别中 $currPage/$totalP页 ($progPercent%)';
+        progressLabel = '$currPage/$totalP页 ($progPercent%)';
       } else {
-        progressLabel = '识别中 $progPercent%';
+        progressLabel = '$progPercent%';
       }
 
       return Tooltip(
-        message: '正在进行 OCR 识别 ($progressLabel)，点击查看详情',
+        message: '正在进行 PaddleOCR-VL 识别 ($progressLabel)，点击查看详情',
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
           onTap: onOpenOcr,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
             decoration: BoxDecoration(
               color: const Color(0xFF4F46E5).withValues(alpha: isDark ? 0.25 : 0.12),
               borderRadius: BorderRadius.circular(10),
@@ -443,8 +280,8 @@ class ReaderTopBar extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 SizedBox(
-                  width: 13,
-                  height: 13,
+                  width: 12,
+                  height: 12,
                   child: CircularProgressIndicator(
                     strokeWidth: 2,
                     valueColor: AlwaysStoppedAnimation<Color>(
@@ -452,28 +289,13 @@ class ReaderTopBar extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 5),
                 Text(
                   progressLabel,
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: 11,
                     fontWeight: FontWeight.bold,
                     color: isDark ? const Color(0xFF818CF8) : const Color(0xFF4338CA),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(3),
-                  child: SizedBox(
-                    width: 32,
-                    height: 5,
-                    child: LinearProgressIndicator(
-                      value: (ocrProgress?.progress ?? 0.05).clamp(0.05, 1.0),
-                      backgroundColor: (isDark ? const Color(0xFF818CF8) : const Color(0xFF4F46E5)).withValues(alpha: 0.2),
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        isDark ? const Color(0xFF818CF8) : const Color(0xFF4F46E5),
-                      ),
-                    ),
                   ),
                 ),
               ],
@@ -483,15 +305,14 @@ class ReaderTopBar extends StatelessWidget {
       );
     }
 
-    // State 3: Native Text Layer (Clickable to allow AI Studio OCR Re-recognition on specific pages)
     if (isNativeText) {
       return Tooltip(
-        message: '文档含原生文字层。点击可使用 PaddleOCR-VL 对特定页面（如公式/排版复杂页）重新识别并合并',
+        message: '文档含原生文字层。点击可使用 PaddleOCR-VL 提取结构化 Markdown 与 LaTeX 公式',
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
           onTap: onOpenOcr,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
             decoration: BoxDecoration(
               color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.04),
               borderRadius: BorderRadius.circular(10),
@@ -505,12 +326,12 @@ class ReaderTopBar extends StatelessWidget {
               children: [
                 Icon(
                   Icons.auto_awesome_rounded,
-                  size: 15,
+                  size: 14,
                   color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                 ),
-                const SizedBox(width: 5),
+                const SizedBox(width: 4),
                 Text(
-                  '原生文字 (可增强)',
+                  '提取MD',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
@@ -524,9 +345,8 @@ class ReaderTopBar extends StatelessWidget {
       );
     }
 
-    // State 4: Scanned / Image PDF Not Started (Active Clickable Button)
     return Tooltip(
-      message: '一键生成双层可检索 PDF，支持文字划词高亮与数学公式识别',
+      message: '一键使用 PaddleOCR-VL 提取结构化 Markdown、数学公式与表格',
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
         onTap: onOpenOcr,
@@ -548,10 +368,10 @@ class ReaderTopBar extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.auto_fix_high_rounded, size: 16, color: Colors.white),
-              const SizedBox(width: 5),
+              const Icon(Icons.auto_awesome_rounded, size: 15, color: Colors.white),
+              const SizedBox(width: 4),
               Text(
-                document.ocrStatus == 'failed' ? 'OCR 重试' : '双层 OCR',
+                document.ocrStatus == 'failed' ? 'OCR 重试' : 'OCR 解析',
                 style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
               ),
             ],
@@ -566,7 +386,7 @@ class ReaderTopBar extends StatelessWidget {
       padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
         color: theme.cardTheme.color,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(
           color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
         ),
@@ -575,7 +395,6 @@ class ReaderTopBar extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           _buildModeTab(
-            context: context,
             title: 'PDF',
             icon: Icons.picture_as_pdf_rounded,
             isSelected: viewMode == ReaderViewMode.pdf,
@@ -584,7 +403,6 @@ class ReaderTopBar extends StatelessWidget {
           ),
           const SizedBox(width: 3),
           _buildModeTab(
-            context: context,
             title: 'MD',
             icon: Icons.menu_book_rounded,
             isSelected: viewMode == ReaderViewMode.markdown,
@@ -599,7 +417,6 @@ class ReaderTopBar extends StatelessWidget {
   }
 
   Widget _buildModeTab({
-    required BuildContext context,
     required String title,
     required IconData icon,
     required bool isSelected,
@@ -610,34 +427,25 @@ class ReaderTopBar extends StatelessWidget {
   }) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(9),
+      borderRadius: BorderRadius.circular(8),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
         decoration: BoxDecoration(
           color: isSelected ? const Color(0xFF4F46E5) : Colors.transparent,
-          borderRadius: BorderRadius.circular(9),
-          boxShadow: isSelected
-              ? [
-                  BoxShadow(
-                    color: const Color(0xFF4F46E5).withValues(alpha: 0.3),
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
-                  ),
-                ]
-              : [],
+          borderRadius: BorderRadius.circular(8),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
               icon,
-              size: 15,
+              size: 14,
               color: isSelected
                   ? Colors.white
                   : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
             ),
-            const SizedBox(width: 5),
+            const SizedBox(width: 4),
             Text(
               title,
               style: TextStyle(
@@ -653,8 +461,8 @@ class ReaderTopBar extends StatelessWidget {
               Tooltip(
                 message: badgeTooltip ?? '',
                 child: Container(
-                  width: 6,
-                  height: 6,
+                  width: 5,
+                  height: 5,
                   decoration: BoxDecoration(
                     color: isSelected ? Colors.greenAccent : const Color(0xFF10B981),
                     shape: BoxShape.circle,
@@ -668,5 +476,3 @@ class ReaderTopBar extends StatelessWidget {
     );
   }
 }
-
-
