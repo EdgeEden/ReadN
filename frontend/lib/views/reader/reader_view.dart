@@ -13,6 +13,7 @@ import '../../providers/ai_provider.dart';
 import '../../providers/annotation_provider.dart';
 import '../../providers/document_provider.dart';
 import '../../providers/reader_settings_provider.dart';
+import '../../services/cache/doc_cache_service.dart';
 import '../../theme/app_theme.dart';
 import 'components/floating_selection_bar.dart';
 import 'components/markdown_html_support.dart';
@@ -944,17 +945,29 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     await annoProvider.deleteAnnotation(anno.id);
     docProvider.updateAnnotationCount(_doc.id, -1);
 
-    if (_markdownContent != null && _markdownContent!.isNotEmpty && anno.selectedText.trim().isNotEmpty) {
+    if (anno.selectedText.trim().isNotEmpty) {
       final text = anno.selectedText.trim();
-      final updatedMd = _removeHighlightFromMarkdown(_markdownContent!, text);
-      if (updatedMd != _markdownContent) {
-        setState(() {
-          _markdownContent = updatedMd;
-        });
-        try {
-          await docProvider.saveMarkdown(_doc.id, updatedMd);
-        } catch (e) {
-          debugPrint('Error saving markdown after deleting annotation: $e');
+      var currentMd = _markdownContent;
+      if (currentMd == null || currentMd.isEmpty) {
+        final cached = await DocCacheService().getMarkdown(_doc.id);
+        if (cached != null && cached.isNotEmpty) {
+          currentMd = cached;
+        }
+      }
+
+      if (currentMd != null && currentMd.isNotEmpty) {
+        final updatedMd = _removeHighlightFromMarkdown(currentMd, text);
+        if (updatedMd != currentMd) {
+          if (mounted) {
+            setState(() {
+              _markdownContent = updatedMd;
+            });
+          }
+          try {
+            await docProvider.saveMarkdown(_doc.id, updatedMd);
+          } catch (e) {
+            debugPrint('Error saving markdown after deleting annotation: $e');
+          }
         }
       }
     }

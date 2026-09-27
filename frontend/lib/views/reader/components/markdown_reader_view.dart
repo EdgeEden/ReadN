@@ -543,36 +543,46 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     final docProvider = context.read<DocumentProvider>();
     final annoProvider = context.read<AnnotationProvider>();
 
-    // 1. Update the chunk and combined markdown with robust highlight syntax
+    // 1. Update chunks by applying segmented line-by-line highlight
+    bool anyChunkModified = false;
     int chunkIdx = _chunks.indexWhere((c) => c.pageNumber == pageNumber);
-    if (chunkIdx == -1 || !_chunks[chunkIdx].content.contains(trimmedText.split(RegExp(r'\r?\n')).first.trim())) {
-      final firstLine = trimmedText.split(RegExp(r'\r?\n')).first.trim();
-      final actualIdx = _chunks.indexWhere((c) => c.content.contains(firstLine));
-      if (actualIdx != -1) {
-        chunkIdx = actualIdx;
-      } else if (_chunks.isNotEmpty) {
-        chunkIdx = (chunkIdx == -1) ? 0 : chunkIdx;
+    if (chunkIdx != -1) {
+      final oldChunk = _chunks[chunkIdx];
+      final newContent = applyHighlightToMarkdown(oldChunk.content, selectedText, colorHex);
+      if (newContent != oldChunk.content) {
+        _chunks[chunkIdx] = MarkdownPageChunk(
+          pageNumber: oldChunk.pageNumber,
+          content: newContent,
+        );
+        anyChunkModified = true;
       }
     }
 
-    if (chunkIdx != -1) {
-      final oldChunk = _chunks[chunkIdx];
-      final newChunkContent = applyHighlightToMarkdown(oldChunk.content, selectedText, colorHex);
-      if (newChunkContent != oldChunk.content) {
-        _chunks[chunkIdx] = MarkdownPageChunk(
-          pageNumber: oldChunk.pageNumber,
-          content: newChunkContent,
-        );
-
-        final combinedMd = _recombineChunks(_chunks);
-        widget.onMarkdownUpdated?.call(combinedMd);
-
-        try {
-          await docProvider.saveMarkdown(widget.document.id, combinedMd);
-        } catch (e) {
-          debugPrint('Error saving markdown: $e');
+    // If targeted chunk was not modified or selection spans other chunks, search across all chunks
+    if (!anyChunkModified) {
+      for (int i = 0; i < _chunks.length; i++) {
+        final chunk = _chunks[i];
+        final newContent = applyHighlightToMarkdown(chunk.content, selectedText, colorHex);
+        if (newContent != chunk.content) {
+          _chunks[i] = MarkdownPageChunk(
+            pageNumber: chunk.pageNumber,
+            content: newContent,
+          );
+          anyChunkModified = true;
         }
       }
+    }
+
+    if (anyChunkModified) {
+      final combinedMd = _recombineChunks(_chunks);
+      widget.onMarkdownUpdated?.call(combinedMd);
+
+      try {
+        await docProvider.saveMarkdown(widget.document.id, combinedMd);
+      } catch (e) {
+        debugPrint('Error saving markdown: $e');
+      }
+      if (mounted) setState(() {});
     }
 
     // 2. Create annotation record with empty rects (prevents drawing full-page box on PDF canvas)

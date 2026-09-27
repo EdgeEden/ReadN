@@ -820,7 +820,91 @@ End of page.
     expect(unhighlighted, contains('- 第二项内容'));
     expect(unhighlighted, contains('> 引用段落内容'));
   });
+
+  test('applyHighlightToMarkdown splits cross-line selection by newlines into segmented highlights', () {
+    const multiLineDoc = '''
+这是第一行选中文本。
+这是第二行选中文本。
+这是第三行选中文本。
+''';
+
+    const crossLineSelection = '''
+这是第一行选中文本。
+这是第二行选中文本。
+这是第三行选中文本。
+''';
+
+    final result = applyHighlightToMarkdown(multiLineDoc, crossLineSelection, '#FDE047');
+    expect(result, contains('==这是第一行选中文本。=='));
+    expect(result, contains('==这是第二行选中文本。=='));
+    expect(result, contains('==这是第三行选中文本。=='));
+    // Ensure newline characters separate the highlight segments
+    expect(result, contains('==这是第一行选中文本。==\n==这是第二行选中文本。==\n==这是第三行选中文本。=='));
+  });
+
+  test('applyHighlightToMarkdown handles Word export markdown sample with headings, bullets, and existing highlights', () {
+    const sample = '''
+<!-- Page 1 -->
+
+## 1. 进入导出界面
+
+点击顶部菜单栏的 文件 -> 导出 -> 点击 创建 PDF/XPS 文档。
+
+## 2. 检查输出选项
+
+点击旁边的【选项】按钮，确保勾选“辅助工具的文档结==[#FFE066]构标记”（用于生==成文字结构与无障碍标记）。
+
+· 避免使用“虚拟打印为 PDF”：部分第三方打印机驱动会将整页渲染成位图。
+
+- 特殊艺术字体被降级：部分受版权限制或不规则的特殊艺术字可能在转换时被自动转为位图。
+''';
+
+    // Scenario A: Multiline selection across heading, paragraph, and bullet items
+    const selectionA = '''
+进入导出界面
+点击顶部菜单栏的 文件 -> 导出 -> 点击 创建 PDF/XPS 文档。
+避免使用“虚拟打印为 PDF”：部分第三方打印机驱动会将整页渲染成位图。
+特殊艺术字体被降级：部分受版权限制或不规则的特殊艺术字可能在转换时被自动转为位图。
+''';
+
+    final resA = applyHighlightToMarkdown(sample, selectionA, '#86EFAC');
+    expect(resA, contains('## 1. ==[#86EFAC]进入导出界面=='));
+    expect(resA, contains('==[#86EFAC]点击顶部菜单栏的 文件 -> 导出 -> 点击 创建 PDF/XPS 文档。=='));
+    expect(resA, contains('· ==[#86EFAC]避免使用“虚拟打印为 PDF”：部分第三方打印机驱动会将整页渲染成位图。=='));
+    expect(resA, contains('- ==[#86EFAC]特殊艺术字体被降级：部分受版权限制或不规则的特殊艺术字可能在转换时被自动转为位图。=='));
+
+    // Scenario B: Selection on text with existing highlight tags updates cleanly
+    const selectionB = '确保勾选“辅助工具的文档结构标记”（用于生成文字结构与无障碍标记）。';
+    final resB = applyHighlightToMarkdown(sample, selectionB, '#FDE047');
+    expect(resB, contains('==确保勾选“辅助工具的文档结构标记”（用于生成文字结构与无障碍标记）。=='));
+    // Ensure no broken nested tags like 结==[#FFE066]构
+    expect(resB, isNot(contains('结==[#FFE066]构')));
+
+    // Scenario C: Removing multiline highlight (simulating sidebar delete button)
+    final removedA = removeHighlightFromMarkdown(resA, selectionA);
+    expect(removedA, isNot(contains('==[#86EFAC]')));
+    expect(removedA, contains('## 1. 进入导出界面'));
+    expect(removedA, contains('点击顶部菜单栏的 文件 -> 导出 -> 点击 创建 PDF/XPS 文档。'));
+    expect(removedA, contains('· 避免使用“虚拟打印为 PDF”：部分第三方打印机驱动会将整页渲染成位图。'));
+    expect(removedA, contains('- 特殊艺术字体被降级：部分受版权限制或不规则的特殊艺术字可能在转换时被自动转为位图。'));
+
+    // Scenario D: Removing multiline highlight when selection text itself includes Markdown prefixes
+    const selectionWithPrefixes = '''
+## 1. 进入导出界面
+点击顶部菜单栏的 文件 -> 导出 -> 点击 创建 PDF/XPS 文档。
+· 避免使用“虚拟打印为 PDF”：部分第三方打印机驱动会将整页渲染成位图。
+- 特殊艺术字体被降级：部分受版权限制或不规则的特殊艺术字可能在转换时被自动转为位图。
+''';
+    final removedWithPrefixes = removeHighlightFromMarkdown(resA, selectionWithPrefixes);
+    expect(removedWithPrefixes, isNot(contains('==[#86EFAC]')));
+    expect(removedWithPrefixes, contains('## 1. 进入导出界面'));
+    expect(removedWithPrefixes, contains('点击顶部菜单栏的 文件 -> 导出 -> 点击 创建 PDF/XPS 文档。'));
+    expect(removedWithPrefixes, contains('· 避免使用“虚拟打印为 PDF”：部分第三方打印机驱动会将整页渲染成位图。'));
+    expect(removedWithPrefixes, contains('- 特殊艺术字体被降级：部分受版权限制或不规则的特殊艺术字可能在转换时被自动转为位图。'));
+  });
 }
+
+
 
 
 

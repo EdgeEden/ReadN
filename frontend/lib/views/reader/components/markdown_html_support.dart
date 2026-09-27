@@ -79,7 +79,7 @@ Color? parseHtmlColor(String? colorStr) {
 }
 
 /// Robustly applies Markdown fluorescent highlight (`==text==` or `==[#HEX]text==`) to markdown content,
-/// correctly preserving line prefixes (Headings `#`, list markers `-`/`1.`, blockquotes `>`) and
+/// correctly preserving line prefixes (Headings `#`, list markers `-`/`*`/`·`/`•`/`1.`/`1、`/`（1）`, blockquotes `>`) and
 /// properly handling multiline selections without corrupting Markdown block syntax.
 String applyHighlightToMarkdown(String content, String selectedText, String colorHex) {
   if (content.isEmpty || selectedText.trim().isEmpty) return content;
@@ -90,82 +90,48 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
       ? '=='
       : '==[$normalizedHex]';
 
-  // 1. Single-line selection
-  if (!trimmed.contains('\n')) {
-    final replacement = '$tagPrefix$trimmed==';
-    if (content.contains(replacement)) return content;
-
-    // Check if the target is an entire heading line: e.g. "## Heading"
-    final headingLineRegex = RegExp(
-      r'^([ \t]*#{1,6}[ \t]+)' + RegExp.escape(trimmed) + r'([ \t]*)$',
-      multiLine: true,
-    );
-    if (headingLineRegex.hasMatch(content)) {
-      return content.replaceFirstMapped(
-        headingLineRegex,
-        (m) => '${m.group(1)}$tagPrefix$trimmed==${m.group(2)}',
-      );
+  // Helper to wrap text safely without crossing any newlines
+  String wrapSegment(String text) {
+    if (text.isEmpty) return text;
+    if (!text.contains('\n')) {
+      return '$tagPrefix$text==';
     }
-
-    // Check if the target is inside a heading line: e.g. "## 7. Heading text"
-    final insideHeadingRegex = RegExp(
-      r'^([ \t]*#{1,6}[ \t]+.*?)(?:' + RegExp.escape(trimmed) + r')(.*)$',
-      multiLine: true,
-    );
-    if (insideHeadingRegex.hasMatch(content)) {
-      return content.replaceFirstMapped(
-        insideHeadingRegex,
-        (m) => '${m.group(1)}$tagPrefix$trimmed==${m.group(2)}',
-      );
-    }
-
-    // Check if target is a list item: e.g. "- Item" or "1. Item"
-    final listLineRegex = RegExp(
-      r'^([ \t]*(?:[-*+]|\d+\.)[ \t]+)' + RegExp.escape(trimmed) + r'([ \t]*)$',
-      multiLine: true,
-    );
-    if (listLineRegex.hasMatch(content)) {
-      return content.replaceFirstMapped(
-        listLineRegex,
-        (m) => '${m.group(1)}$tagPrefix$trimmed==${m.group(2)}',
-      );
-    }
-
-    // Direct exact containment
-    if (content.contains(trimmed)) {
-      return content.replaceFirst(trimmed, replacement);
-    }
-
-    // Flexible whitespace match
-    final tokens = trimmed.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
-    if (tokens.isNotEmpty) {
-      final flexPattern = tokens.map((t) => RegExp.escape(t)).join(r'\s+');
-      final flexRegex = RegExp(flexPattern);
-      final match = flexRegex.firstMatch(content);
-      if (match != null) {
-        final matchedText = match.group(0)!;
-        return content.replaceFirst(matchedText, '$tagPrefix$matchedText==');
-      }
-    }
-    return content;
+    return text.split('\n').map((line) {
+      final lineTrimmed = line.trim();
+      if (lineTrimmed.isEmpty) return line;
+      final leadingMatch = RegExp(r'^\s*').firstMatch(line)?.group(0) ?? '';
+      final trailingMatch = RegExp(r'\s*$').firstMatch(line)?.group(0) ?? '';
+      final core = line.substring(leadingMatch.length, line.length - trailingMatch.length);
+      if (core.isEmpty) return line;
+      return '$leadingMatch$tagPrefix$core==$trailingMatch';
+    }).join('\n');
   }
 
-  // 2. Multiline selection
-  var updatedContent = content;
-  final lines = trimmed
-      .split(RegExp(r'\r?\n'))
+  // 1. Split selectedText by newline characters (\r\n, \r, \n) to handle multiline selections segment-by-segment
+  final rawLines = trimmed
+      .split(RegExp(r'\r?\n|\r'))
       .map((l) => l.trim())
-      .where((l) => l.isNotEmpty)
+      .where((l) => l.isNotEmpty && !l.startsWith('<!--') && !l.startsWith('-->'))
       .toList();
 
-  for (final line in lines) {
+  if (rawLines.isEmpty) return content;
+
+  var updatedContent = content;
+
+  for (final rawLine in rawLines) {
+    // Strip existing highlight syntax from the raw line if present in selection
+    final line = rawLine.replaceAll(
+      RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
+      '',
+    ).trim();
     if (line.isEmpty) continue;
+
     final lineReplacement = '$tagPrefix$line==';
     if (updatedContent.contains(lineReplacement)) {
-      continue; // Already highlighted
+      continue; // Already highlighted with current tag
     }
 
-    // Check heading line
+    // A. Check if the line is an entire heading line: e.g. "## Heading"
     final headingLineRegex = RegExp(
       r'^([ \t]*#{1,6}[ \t]+)' + RegExp.escape(line) + r'([ \t]*)$',
       multiLine: true,
@@ -178,7 +144,7 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
       continue;
     }
 
-    // Check inside heading
+    // B. Check if inside a heading line: e.g. "## 1. Entering..." where line is "Entering..."
     final insideHeadingRegex = RegExp(
       r'^([ \t]*#{1,6}[ \t]+.*?)(?:' + RegExp.escape(line) + r')(.*)$',
       multiLine: true,
@@ -191,47 +157,59 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
       continue;
     }
 
-    // Check list item
-    final listLineRegex = RegExp(
-      r'^([ \t]*(?:[-*+]|\d+\.)[ \t]+)' + RegExp.escape(line) + r'([ \t]*)$',
+    // C. Check if list item or blockquote: e.g. "- Item" / "· Item" / "• Item" / "1. Item" / "1、Item" / "（1）Item" / "> Quote"
+    final listOrQuoteRegex = RegExp(
+      r'^([ \t]*(?:[-*+•·]|\d+[\.、]|[（(]\d+[）)]|>)[ \t]*)' + RegExp.escape(line) + r'([ \t]*)$',
       multiLine: true,
     );
-    if (listLineRegex.hasMatch(updatedContent)) {
+    if (listOrQuoteRegex.hasMatch(updatedContent)) {
       updatedContent = updatedContent.replaceFirstMapped(
-        listLineRegex,
+        listOrQuoteRegex,
         (m) => '${m.group(1)}$tagPrefix$line==${m.group(2)}',
       );
       continue;
     }
 
-    // Check blockquote
-    final quoteLineRegex = RegExp(
-      r'^([ \t]*>[ \t]*)' + RegExp.escape(line) + r'([ \t]*)$',
-      multiLine: true,
-    );
-    if (quoteLineRegex.hasMatch(updatedContent)) {
-      updatedContent = updatedContent.replaceFirstMapped(
-        quoteLineRegex,
-        (m) => '${m.group(1)}$tagPrefix$line==${m.group(2)}',
-      );
-      continue;
-    }
-
-    // Direct line match
+    // D. Direct exact substring containment
     if (updatedContent.contains(line)) {
       updatedContent = updatedContent.replaceFirst(line, lineReplacement);
       continue;
     }
 
-    // Flexible whitespace matching for the line
+    // E. Matching with flexible whitespace and/or existing embedded highlight tags (supports both spaced words and CJK character sequences)
+    final tagOrSpace = r'(?:\s+|==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>)*';
+    bool matched = false;
+
     final tokens = line.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
-    if (tokens.isNotEmpty) {
-      final flexPattern = tokens.map((t) => RegExp.escape(t)).join(r'\s+');
+    if (tokens.length > 1) {
+      final flexPattern = tokens.map((t) => RegExp.escape(t)).join(tagOrSpace);
       final flexRegex = RegExp(flexPattern);
       final match = flexRegex.firstMatch(updatedContent);
       if (match != null) {
-        final matchedText = match.group(0)!;
-        updatedContent = updatedContent.replaceFirst(matchedText, '$tagPrefix$matchedText==');
+        final matchedSpan = match.group(0)!;
+        final cleanMatchedText = matchedSpan.replaceAll(
+          RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
+          '',
+        );
+        updatedContent = updatedContent.replaceFirst(matchedSpan, wrapSegment(cleanMatchedText));
+        matched = true;
+      }
+    }
+
+    if (!matched) {
+      final chars = line.split('').where((c) => c.trim().isNotEmpty).toList();
+      if (chars.isNotEmpty) {
+        final charPattern = chars.map((c) => RegExp.escape(c)).join(tagOrSpace);
+        final charRegex = RegExp(charPattern);
+        final match = charRegex.firstMatch(updatedContent);
+        if (match != null) {
+          final matchedSpan = match.group(0)!;
+          final cleanMatchedText = matchedSpan.replaceAll(
+            RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
+            '',
+          );
+          updatedContent = updatedContent.replaceFirst(matchedSpan, wrapSegment(cleanMatchedText));
+        }
       }
     }
   }
@@ -243,60 +221,77 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
 String removeHighlightFromMarkdown(String markdown, String targetText) {
   if (markdown.trim().isEmpty || targetText.trim().isEmpty) return markdown;
 
-  var result = markdown;
   final trimmed = targetText.trim();
-  final escaped = RegExp.escape(trimmed);
+  final cleanText = trimmed.replaceAll(
+    RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
+    '',
+  ).trim();
+  if (cleanText.isEmpty) return markdown;
 
-  // 1. Direct Markdown highlight: ==[#HEX]target== or ==target==
-  final directRegex = RegExp(
-    r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*' + escaped + r'\s*==',
-  );
-  if (directRegex.hasMatch(result)) {
-    result = result.replaceAllMapped(directRegex, (_) => trimmed);
+  String normalize(String s) {
+    return s
+        .replaceAll(RegExp(r'[\s\r\n\t]+'), '')
+        .replaceAll(RegExp(r'^(\$\$|\$|\\\[|\\\()|(\$\$|\$|\\\]|\\\))$'), '')
+        .toLowerCase();
   }
 
-  // 2. HTML mark tag: <mark ...>target</mark>
-  final htmlMarkRegex = RegExp(
-    r'<mark(?:\s+[^>]*)?>\s*' + escaped + r'\s*</mark>',
-    caseSensitive: false,
-  );
-  if (htmlMarkRegex.hasMatch(result)) {
-    result = result.replaceAllMapped(htmlMarkRegex, (_) => trimmed);
-  }
+  final cleanNorm = normalize(cleanText);
+  if (cleanNorm.isEmpty) return markdown;
 
-  // 3. Mathematical formulas with / without delimiters ($...$, $$...$$, ```latex...```)
-  final strippedFormula = trimmed.replaceAll(RegExp(r'^(\$\$|\$)|(\$\$|\$)$'), '').trim();
-  if (strippedFormula.isNotEmpty) {
-    final escapedStripped = RegExp.escape(strippedFormula);
-    final formulaHighlightRegex = RegExp(
-      r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*((\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
-          escapedStripped +
-          r'\s*(\$\$|\$|\\\]|\\\)|\n?```))\s*==',
-    );
-    if (formulaHighlightRegex.hasMatch(result)) {
-      result = result.replaceAllMapped(formulaHighlightRegex, (m) => m.group(1) ?? strippedFormula);
-    }
-  }
-
-  // 4. Multiline line-by-line removal
-  final lines = trimmed
-      .split(RegExp(r'\r?\n'))
-      .map((l) => l.trim())
+  // Split cleanText into normalized lines/tokens for precise matching
+  final cleanLines = cleanText
+      .split(RegExp(r'\r?\n|\r'))
+      .map((l) => l.replaceFirst(
+            RegExp(r'^[ \t]*(?:#{1,6}[ \t]+(?:\d+[\.、][ \t]*)?|[-*+•·][ \t]+|\d+[\.、][ \t]*|[（(]\d+[）)][ \t]*|>[ \t]*)'),
+            '',
+          ).trim())
+      .where((l) => l.isNotEmpty && !l.startsWith('<!--') && !l.startsWith('-->'))
+      .map(normalize)
       .where((l) => l.isNotEmpty)
-      .toList();
-  if (lines.length > 1) {
-    for (final line in lines) {
-      final lineEscaped = RegExp.escape(line);
-      final lineDirectRegex = RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*' + lineEscaped + r'\s*==');
-      if (lineDirectRegex.hasMatch(result)) {
-        result = result.replaceAllMapped(lineDirectRegex, (_) => line);
-      }
-      final lineHtmlRegex = RegExp(r'<mark(?:\s+[^>]*)?>\s*' + lineEscaped + r'\s*</mark>', caseSensitive: false);
-      if (lineHtmlRegex.hasMatch(result)) {
-        result = result.replaceAllMapped(lineHtmlRegex, (_) => line);
-      }
+      .toSet();
+
+  var result = markdown;
+
+  // 1. Markdown highlight blocks: ==[#HEX]content== or ==content==
+  final mdHighlightRegex = RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?([\s\S]*?)==');
+  result = result.replaceAllMapped(mdHighlightRegex, (match) {
+    final rawInside = match.group(1) ?? '';
+    final insideNorm = normalize(rawInside);
+    if (insideNorm.isEmpty) return rawInside;
+
+    // Check if insideNorm is part of cleanNorm or any cleanLines
+    if (cleanNorm.contains(insideNorm) ||
+        cleanLines.any((line) => line == insideNorm || (insideNorm.length >= 2 && line.contains(insideNorm)))) {
+      return rawInside;
     }
-  }
+
+    // Check if insideNorm contains cleanNorm (partial removal within a highlight block)
+    if (insideNorm.contains(cleanNorm) && cleanNorm.length >= 2) {
+      final cleanEscaped = RegExp.escape(cleanText.trim());
+      final subRegex = RegExp(cleanEscaped);
+      if (subRegex.hasMatch(rawInside)) {
+        return rawInside;
+      }
+      return rawInside;
+    }
+
+    return match.group(0)!;
+  });
+
+  // 2. HTML mark tag blocks: <mark ...>content</mark>
+  final htmlMarkRegex = RegExp(r'<mark(?:\s+[^>]*)?>([\s\S]*?)</mark>', caseSensitive: false);
+  result = result.replaceAllMapped(htmlMarkRegex, (match) {
+    final rawInside = match.group(1) ?? '';
+    final insideNorm = normalize(rawInside);
+    if (insideNorm.isEmpty) return rawInside;
+
+    if (cleanNorm.contains(insideNorm) ||
+        cleanLines.any((line) => line == insideNorm || (insideNorm.length >= 2 && line.contains(insideNorm)))) {
+      return rawInside;
+    }
+
+    return match.group(0)!;
+  });
 
   return result;
 }
