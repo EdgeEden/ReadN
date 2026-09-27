@@ -1,7 +1,10 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from app.config import HOST, PORT, CORS_ORIGINS
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from app.config import HOST, PORT, CORS_ORIGINS, STATIC_DIR
 from app.database import init_db
 from app.routers import documents, annotations
 
@@ -43,6 +46,19 @@ async def health_check():
         "service": "ReadN Backend API",
         "version": "1.0.0"
     }
+
+
+# Mount static files if web build exists
+if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
+    @app.exception_handler(StarletteHTTPException)
+    async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
+        if exc.status_code == 404 and not request.url.path.startswith("/api/"):
+            index_file = STATIC_DIR / "index.html"
+            if index_file.exists():
+                return FileResponse(str(index_file))
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 
 if __name__ == "__main__":

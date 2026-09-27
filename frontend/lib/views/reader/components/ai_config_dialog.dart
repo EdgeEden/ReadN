@@ -310,7 +310,7 @@ class _AiConfigDialogState extends State<AiConfigDialog> {
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                             ),
                             items: [
-                              ..._availableModels.map((m) {
+                              ..._availableModels.toSet().map((m) {
                                 return DropdownMenuItem<String>(
                                   value: m,
                                   child: Text(
@@ -561,6 +561,7 @@ class _AiConfigDialogState extends State<AiConfigDialog> {
           ),
         ),
       ),
+      actionsAlignment: MainAxisAlignment.spaceBetween,
       actions: [
         // Test Connection Button
         OutlinedButton.icon(
@@ -578,20 +579,25 @@ class _AiConfigDialogState extends State<AiConfigDialog> {
               : const Icon(Icons.bolt_rounded, size: 16),
           label: Text(_isTesting ? '正在测试...' : '测试连接', style: const TextStyle(fontSize: 12)),
         ),
-        const Spacer(),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton.icon(
-          style: FilledButton.styleFrom(
-            backgroundColor: const Color(0xFF6366F1),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-          onPressed: _save,
-          icon: const Icon(Icons.save_rounded, size: 16),
-          label: const Text('保存配置', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
+            ),
+            const SizedBox(width: 8),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF6366F1),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed: _save,
+              icon: const Icon(Icons.save_rounded, size: 16),
+              label: const Text('保存配置', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            ),
+          ],
         ),
       ],
     );

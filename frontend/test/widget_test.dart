@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:frontend/models/document_model.dart';
@@ -7,11 +8,20 @@ import 'package:frontend/providers/ai_provider.dart';
 import 'package:frontend/providers/reader_settings_provider.dart';
 import 'package:frontend/services/ai_service.dart';
 import 'package:frontend/services/storage_service.dart';
+import 'package:frontend/services/cache/doc_cache_service.dart';
+import 'package:frontend/services/cache/annotation_cache_service.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:frontend/providers/document_provider.dart';
+import 'package:frontend/providers/annotation_provider.dart';
+import 'package:frontend/views/reader/components/ai_config_dialog.dart';
 import 'package:frontend/views/reader/components/markdown_html_support.dart';
 import 'package:frontend/views/reader/components/markdown_reader_view.dart';
+import 'package:frontend/services/api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   test('DocumentModel serialization test', () {
     final doc = DocumentModel(
       id: 'doc-123',
@@ -605,6 +615,210 @@ End of page.
     expect(highlightAnno.isHighlight, true);
     expect(highlightAnno.isNote, false);
     expect(highlightAnno.isCard, false);
+  });
+
+  test('AnnotationCacheService save and retrieve test', () async {
+    SharedPreferences.setMockInitialValues({});
+    final cache = await AnnotationCacheService.init();
+
+    final anno1 = PdfAnnotation(
+      id: 'anno-test-1',
+      docId: 'doc-cache-test',
+      type: 'highlight',
+      pageNumber: 1,
+      colorHex: '#FFE066',
+      rects: const [NormalizedRect(x: 0.1, y: 0.2, width: 0.3, height: 0.04)],
+      selectedText: 'Cached Highlight Text',
+      noteContent: '',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    final anno2 = PdfAnnotation(
+      id: 'card-test-2',
+      docId: 'doc-cache-test',
+      type: 'card',
+      pageNumber: 2,
+      colorHex: '#8B5CF6',
+      rects: const [],
+      selectedText: 'Formula Quote',
+      noteContent: '## Card Title\nCard body content',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    expect(cache.getAnnotations('doc-cache-test').isEmpty, true);
+
+    await cache.saveAnnotations('doc-cache-test', [anno1, anno2]);
+
+    final retrieved = cache.getAnnotations('doc-cache-test');
+    expect(retrieved.length, 2);
+    expect(retrieved[0].id, 'anno-test-1');
+    expect(retrieved[0].selectedText, 'Cached Highlight Text');
+    expect(retrieved[1].id, 'card-test-2');
+    expect(retrieved[1].isCard, true);
+
+    await cache.deleteAnnotations('doc-cache-test');
+    expect(cache.getAnnotations('doc-cache-test').isEmpty, true);
+  });
+
+  test('DocCacheService save and retrieve PDF and Markdown test', () async {
+    final docCache = DocCacheService();
+    await docCache.init();
+
+    final sampleBytes = Uint8List.fromList([37, 80, 68, 70, 45, 49, 46, 52]); // %PDF-1.4
+    const docId = 'test-doc-id-999';
+    const checksum = 'sample-sha256-checksum';
+
+    await docCache.savePdf(docId, sampleBytes, checksum: checksum);
+    expect(await docCache.hasPdf(docId), true);
+    expect(await docCache.hasPdf(docId, expectedChecksum: checksum), true);
+    expect(await docCache.hasPdf(docId, expectedChecksum: 'mismatched-checksum'), false);
+
+    final retrievedBytes = await docCache.getPdf(docId, expectedChecksum: checksum);
+    expect(retrievedBytes, isNotNull);
+    expect(retrievedBytes!.length, sampleBytes.length);
+    expect(retrievedBytes[0], 37);
+
+    // Markdown test
+    const mdSample = '# Markdown Cache Test\n- Item 1\n- Item 2';
+    await docCache.saveMarkdown(docId, mdSample);
+    final retrievedMd = await docCache.getMarkdown(docId);
+    expect(retrievedMd, mdSample);
+
+    // Cleanup
+    await docCache.deletePdf(docId);
+    await docCache.deleteMarkdown(docId);
+    expect(await docCache.hasPdf(docId), false);
+    expect(await docCache.getMarkdown(docId), isNull);
+  });
+  testWidgets('AiConfigDialog renders without errors', (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final storage = await StorageService.init();
+    final aiService = AiService();
+    final aiProvider = AiProvider(storageService: storage, aiService: aiService);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider.value(value: aiProvider),
+        ],
+        child: const MaterialApp(
+          home: Scaffold(
+            body: AiConfigDialog(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('AI 助手服务配置'), findsOneWidget);
+    expect(find.text('API 基础地址 (Base URL)'), findsOneWidget);
+    expect(find.text('保存配置'), findsOneWidget);
+    expect(find.text('测试连接'), findsOneWidget);
+
+    // Test MarkdownReaderView with heading highlight
+    final doc = DocumentModel(
+      id: 'doc-1',
+      filename: 'sample.pdf',
+      title: 'Sample',
+      fileSize: 1000,
+      pageCount: 1,
+      hasTextLayer: true,
+      hasMarkdown: true,
+      ocrStatus: 'none',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+      annotationCount: 0,
+    );
+    final apiService = ApiService(storageService: storage);
+    final docCache = DocCacheService();
+    final annoCache = await AnnotationCacheService.init();
+    final docProvider = DocumentProvider(apiService: apiService, storageService: storage, docCacheService: docCache);
+    final annoProvider = AnnotationProvider(apiService: apiService, storageService: storage, annotationCacheService: annoCache);
+    final settingsProvider = ReaderSettingsProvider(storageService: storage);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider.value(value: docProvider),
+          ChangeNotifierProvider.value(value: annoProvider),
+          ChangeNotifierProvider.value(value: settingsProvider),
+          ChangeNotifierProvider.value(value: aiProvider),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: MarkdownReaderView(
+              document: doc,
+              markdownContent: '<!-- Page 1 -->\n\n## ==2. 在正确答案上面○。==',
+              onOpenOcr: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final textWidget = tester.widget<Text>(find.text('2. 在正确答案上面○。'));
+    expect(textWidget.style?.fontSize, greaterThan(20.0)); // h2 style preserved!
+    expect(textWidget.style?.fontWeight, FontWeight.bold);
+  });
+
+  test('applyHighlightToMarkdown preserves headings and handles multiline text', () {
+    const rawMd = '''
+# 7. 听录音，仿照例句替换画线部分进行练习。
+
+[例] 李/森健太郎
+→ 甲：李 さんですか。
+乙：はい、李 です。どうぞ よろしく。
+''';
+
+    // 1. Single-line heading selection
+    final res1 = applyHighlightToMarkdown(rawMd, '7. 听录音，仿照例句替换画线部分进行练习。', '#FDE047');
+    expect(res1, contains('# ==7. 听录音，仿照例句替换画线部分进行练习。=='));
+
+    // 2. Multiline selection spanning heading and lines
+    const multiSelection = '''
+7. 听录音，仿照例句替换画线部分进行练习。
+[例] 李/森健太郎
+→ 甲：李 さんですか。
+''';
+    final res2 = applyHighlightToMarkdown(rawMd, multiSelection, '#86EFAC');
+    expect(res2, contains('# ==[#86EFAC]7. 听录音，仿照例句替换画线部分进行练习。=='));
+    expect(res2, contains('==[#86EFAC][例] 李/森健太郎=='));
+    expect(res2, contains('==[#86EFAC]→ 甲：李 さんですか。=='));
+    expect(res2, contains('乙：はい、李 です。どうぞ よろしく。'));
+
+    // 3. Multiline deletion
+    final cleanMd = removeHighlightFromMarkdown(res2, multiSelection);
+    expect(cleanMd, isNot(contains('==')));
+    expect(cleanMd, contains('# 7. 听录音，仿照例句替换画线部分进行练习。'));
+    expect(cleanMd, contains('[例] 李/森健太郎'));
+    expect(cleanMd, contains('→ 甲：李 さんですか。'));
+  });
+
+  test('applyHighlightToMarkdown preserves bullet list items and blockquotes', () {
+    const listMd = '''
+- 第一项内容
+- 第二项内容
+> 引用段落内容
+''';
+
+    const sel = '''
+第一项内容
+第二项内容
+引用段落内容
+''';
+    final highlighted = applyHighlightToMarkdown(listMd, sel, '#93C5FD');
+    expect(highlighted, contains('- ==[#93C5FD]第一项内容=='));
+    expect(highlighted, contains('- ==[#93C5FD]第二项内容=='));
+    expect(highlighted, contains('> ==[#93C5FD]引用段落内容=='));
+
+    final unhighlighted = removeHighlightFromMarkdown(highlighted, sel);
+    expect(unhighlighted, isNot(contains('==')));
+    expect(unhighlighted, contains('- 第一项内容'));
+    expect(unhighlighted, contains('- 第二项内容'));
+    expect(unhighlighted, contains('> 引用段落内容'));
   });
 }
 

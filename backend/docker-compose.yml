@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  readn-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: readn_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      - ./storage/documents:/app/storage/documents
+      - readn_db:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  readn_db:
+

@@ -14,6 +14,7 @@ import 'ai_card_summary_dialog.dart';
 import 'ai_config_dialog.dart';
 import 'knowledge_card_dialog.dart';
 import 'latex_interactive_view.dart';
+import 'markdown_html_support.dart';
 import 'markdown_reader_view.dart';
 
 class AiChatSidebarTab extends StatefulWidget {
@@ -641,6 +642,7 @@ class _AiChatSidebarTabState extends State<AiChatSidebarTab> with SingleTickerPr
                     builders: {
                       'latex': _AiLatexBuilder(isDark: isDark, textColor: textColor),
                       'code': _AiCodeBuilder(isDark: isDark, textColor: textColor),
+                      'mark': CommonMarkElementBuilder(isDark: isDark, fontSize: 13),
                     },
                     styleSheet: MarkdownStyleSheet(
                       p: TextStyle(fontSize: 13, height: 1.6, color: textColor),

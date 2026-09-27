@@ -1,154 +1,154 @@
-# ReadN 云服务器极简部署指南 (Screen 进程托管)
+# ReadN Linux 云服务器部署指南 (Screen 进程托管)
 
-本指南针对 Linux 云服务器（Ubuntu / Debian / CentOS / Almalinux），详细说明如何使用 `screen` 在后台托管运行 Python FastAPI 后端服务，并可选配置 Nginx 代理与域名访问。
-
----
-
-## 目录
-1. [服务器环境准备](#1-服务器环境准备)
-2. [拉取代码与安装依赖](#2-拉取代码与安装依赖)
-3. [使用 Screen 托管后端进程](#3-使用-screen-托管后端进程)
-4. [Screen 常用运维指令速查表](#4-screen-常用运维指令速查表)
-5. [配置开机自启动与 Watchdog 守护](#5-配置开机自启动与-watchdog-守护)
-6. [可选：配置 Nginx 与 SSL 证书](#6-可选配置-nginx-与-ssl-证书)
+本指南针对主流 Linux 云服务器（Ubuntu 20.04/22.04/24.04、Debian 11/12、CentOS 7/8/9、AlmaLinux、Rocky Linux 等），详细介绍如何通过 `screen` 在后台托管运行 Python FastAPI 后端服务，并提供 Nginx 反向代理配置与自启动设置。
 
 ---
 
-## 1. 服务器环境准备
+## 一、服务器环境快速准备
 
-登录您的云服务器（以 Ubuntu/Debian 为例）：
+登录您的 Linux 云服务器终端（推荐 Ubuntu/Debian 系统）：
 
+### 1. 更新系统并安装 Python3 与 screen
 ```bash
-# 更新系统包管理器
+# Ubuntu / Debian:
 sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3 python3-pip python3-venv screen curl unzip
 
-# 安装 Python 3、pip、虚拟环境以及 screen
-sudo apt install -y python3 python3-pip python3-venv screen git
-
-# 安装 OCR 引擎与数学公式识别扩展包 (双层可检索 PDF 支持)
-sudo apt install -y tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng tesseract-ocr-equ ocrmypdf
+# CentOS / RHEL / AlmaLinux / RockyLinux:
+sudo yum install -y python3 python3-pip screen curl unzip
 ```
 
-如果是 CentOS / RHEL 系列：
-```bash
-sudo yum install -y python3 python3-pip screen git tesseract tesseract-langpack-chi_sim tesseract-langpack-equ
-```
+> **说明**：ReadN 现已全面接入百度云端多模态 PaddleOCR-VL API，**服务器端无需安装任何庞大的本地 OCR 或 C++ 图像识别引擎**，环境极其轻量纯粹，1核1G/1核2G 的轻量云服务器即可流畅运行！
 
 ---
 
-## 2. 拉取代码与安装依赖
+## 二、上传并部署后端程序
 
-将项目上传或 clone 到服务器目录（例如 `/opt/readn`）：
-
+### 1. 创建服务工作目录
 ```bash
-# 创建部署目录
 sudo mkdir -p /opt/readn
 sudo chown -R $USER:$USER /opt/readn
 cd /opt/readn
+```
 
-# 上传或放置 backend 目录到 /opt/readn/backend
+### 2. 上传并解压后端压缩包
+将打包好的 `readn_backend.zip` 上传到 `/opt/readn/` 目录下（可以通过 `scp`、Xftp 或终端拖拽）：
+```bash
+# 解压到当前目录
+unzip -o readn_backend.zip -d /opt/readn/backend
+
+# 进入后端目录
 cd /opt/readn/backend
-
-# 创建 Python 虚拟环境并激活
-python3 -m venv venv
-source venv/bin/activate
-
-# 安装依赖
-pip install --upgrade pip
-pip install -r requirements.txt
 ```
 
 ---
 
-## 3. 使用 Screen 托管后端进程
+## 三、使用 Screen 托管运行后端服务
 
-### 方法 A：一键脚本启动（推荐）
+### 方式 A：一键脚本管理（强烈推荐）
 
-在 `backend/deploy/` 目录下提供了现成的启动脚本：
+我们在 `deploy/start_screen.sh` 中集成了完整的生命周期管理（支持自动创建虚拟环境、安装依赖、启动、停止、重启、查看状态及实时日志）：
 
 ```bash
 # 赋予执行权限
 chmod +x deploy/start_screen.sh
 
-# 启动 screen 托管进程
-./deploy/start_screen.sh
+# 1. 启动服务（会自动创建虚拟环境并安装依赖）
+./deploy/start_screen.sh start
+
+# 2. 查看服务状态
+./deploy/start_screen.sh status
+
+# 3. 实时查看后端运行日志（进入 screen 会话）
+./deploy/start_screen.sh logs
+# 退出日志查看界面：按下键盘 Ctrl + A，然后按下 D 键（挂起会话，服务在后台继续运行）
+
+# 4. 重启或停止服务
+./deploy/start_screen.sh restart
+./deploy/start_screen.sh stop
 ```
 
-### 方法 B：手动 Screen 交互式启动
+---
+
+### 方式 B：手动交互式 Screen 步骤
+
+如果您希望纯手工执行每一个命令：
 
 ```bash
-# 1. 创建一个名为 readn_backend 的独立 screen 会话并进入
+# 1. 创建 Python 虚拟环境并安装依赖
+cd /opt/readn/backend
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 2. 新建名为 readn_backend 的后台 Screen 会话并进入
 screen -S readn_backend
 
-# 2. 在该会话窗口中激活虚拟环境并运行 Uvicorn
+# 3. 在该会话中启动 Uvicorn 高性能 ASGI 服务
 cd /opt/readn/backend
 source venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+uvicorn app.main:app --host 0.0.0.0 --port 18903 --workers 2 --proxy-headers
 
-# 3. 分离（挂起）会话回到主终端：
+# 4. 分离（挂起）会话：
 # 键盘按下：Ctrl + A，随后松开并按下 D 键
-# 此时终端会显示 [detached from ...]，后端在云端后台稳定运行！
+# 终端提示 [detached from ...]，此时即已安全在后台运行！
 ```
 
 ---
 
-## 4. Screen 常用运维指令速查表
+## 四、Screen 常用运维操作速查表
 
-| 操作 | 对应命令 | 说明 |
+| 操作需求 | 对应命令 | 说明 |
 | :--- | :--- | :--- |
-| **创建并进入会话** | `screen -S readn_backend` | 创建名为 `readn_backend` 的后台窗口 |
-| **挂起/离开会话** | `Ctrl + A` 然后按 `D` | 进程保持在后台继续运行 |
-| **查看所有运行中的会话** | `screen -ls` | 查看当前已有的 screen 会话列表 |
-| **重新连接/查看日志** | `screen -r readn_backend` | 进入会话实时查看 FastAPI/Uvicorn 日志 |
-| **强制重新连接** | `screen -d -r readn_backend` | 如果提示 Attached，先分离再连接 |
-| **退出并销毁会话** | 进入会话后按 `Ctrl + C` 停服，输入 `exit` | 或执行 `screen -X -S readn_backend quit` |
+| **启动服务** | `./deploy/start_screen.sh start` | 自动在后台创建并运行 |
+| **查看后台所有 Screen 会话** | `screen -ls` | 查看当前活跃会话 |
+| **连接到会话 / 查看实时日志** | `screen -r readn_backend` | 进入后端实时运行终端 |
+| **挂起并离开会话（保持后台运行）** | 键盘按 `Ctrl + A` 后按 `D` | **核心操作**：断开当前连接但保持进程后台运行 |
+| **强制重新连接（若被占用）** | `screen -d -r readn_backend` | 先踢掉旧终端再连接 |
+| **停止/关闭后端服务** | `./deploy/start_screen.sh stop` 或 `screen -X -S readn_backend quit` | 优雅终止后台进程 |
 
 ---
 
-## 5. 配置开机自启动与 Watchdog 守护
+## 五、验证服务运行与云防火墙放行
 
-为了防止服务器重启后服务中断，可将启动脚本加入 crontab 开机任务：
+### 1. 服务器本地健康检查
+```bash
+curl http://127.0.0.1:18903/api/health
+# 正常输出: {"status":"healthy","service":"ReadN Backend API","version":"1.0.0"}
+```
 
+### 2. 云服务器安全组放行端口
+- 前往阿里云 / 腾讯云 / 华为云 / AWS 等云控制台，在**安全组（Security Group）**或**防火墙**入站规则中，添加允许 **TCP 18903 端口**（或配置 Nginx 后的 80/443 端口）。
+
+### 3. 前端应用连接配置
+- 在 ReadN 前端设置中，将 API 基础地址设置为：`http://<您的云服务器公网IP>:18903` 即可畅享极速云端文档同步与大模型阅读交互！
+
+---
+
+## 六、进阶运维配置（可选）
+
+### 1. 配置开机自启（Crontab）
+避免云服务器因维护或重启后服务中断：
 ```bash
 crontab -e
 ```
-
-在末尾添加一行：
+在文件末尾添加：
 ```cron
-@reboot /bin/bash /opt/readn/backend/deploy/start_screen.sh >> /var/log/readn_boot.log 2>&1
+@reboot /bin/bash /opt/readn/backend/deploy/start_screen.sh start >> /var/log/readn_boot.log 2>&1
 ```
 
----
-
-## 6. 可选：配置 Nginx 与 SSL 证书
-
-如果需要通过 80 / 443 端口与域名对外提供服务：
-
+### 2. 配置 Nginx 反向代理与 HTTPS
+如果需要通过标准 80/443 端口及自有域名提供服务，可直接使用提供的 `deploy/nginx.conf`：
 ```bash
-# 1. 安装 Nginx
 sudo apt install -y nginx
-
-# 2. 复制配置文件
 sudo cp /opt/readn/backend/deploy/nginx.conf /etc/nginx/sites-available/readn.conf
 sudo ln -s /etc/nginx/sites-available/readn.conf /etc/nginx/sites-enabled/
-
-# 3. 检查并重载 Nginx
 sudo nginx -t
 sudo systemctl reload nginx
-
-# 4. 配置免费 HTTPS 证书 (Certbot)
+```
+如需配置免费 SSL 证书：
+```bash
 sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d your-domain.com
 ```
-
----
-
-## 7. 验证部署
-
-访问健康检查接口：
-```bash
-curl http://127.0.0.1:8000/api/health
-# 正常返回: {"status":"healthy","service":"ReadN Backend API","version":"1.0.0"}
-```
-云服务器防火墙开启 8000 端口（如云厂商安全组放行入站 TCP 8000 端口）。
-

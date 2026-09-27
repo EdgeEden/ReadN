@@ -540,25 +540,25 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     if (selectedText.trim().isEmpty) return;
 
     final trimmedText = selectedText.trim();
-    final normalizedHex = colorHex.toUpperCase();
-    final tagPrefix = (normalizedHex == '#FDE047' || normalizedHex == 'FDE047')
-        ? '=='
-        : '==[$normalizedHex]';
-    final replacement = '$tagPrefix$trimmedText==';
-
     final docProvider = context.read<DocumentProvider>();
     final annoProvider = context.read<AnnotationProvider>();
 
-    // 1. Update the chunk and combined markdown with highlight syntax
+    // 1. Update the chunk and combined markdown with robust highlight syntax
     int chunkIdx = _chunks.indexWhere((c) => c.pageNumber == pageNumber);
-    if (chunkIdx == -1 && _chunks.isNotEmpty) {
-      chunkIdx = 0;
+    if (chunkIdx == -1 || !_chunks[chunkIdx].content.contains(trimmedText.split(RegExp(r'\r?\n')).first.trim())) {
+      final firstLine = trimmedText.split(RegExp(r'\r?\n')).first.trim();
+      final actualIdx = _chunks.indexWhere((c) => c.content.contains(firstLine));
+      if (actualIdx != -1) {
+        chunkIdx = actualIdx;
+      } else if (_chunks.isNotEmpty) {
+        chunkIdx = (chunkIdx == -1) ? 0 : chunkIdx;
+      }
     }
 
     if (chunkIdx != -1) {
       final oldChunk = _chunks[chunkIdx];
-      if (!oldChunk.content.contains(replacement) && oldChunk.content.contains(trimmedText)) {
-        final newChunkContent = oldChunk.content.replaceFirst(trimmedText, replacement);
+      final newChunkContent = applyHighlightToMarkdown(oldChunk.content, selectedText, colorHex);
+      if (newChunkContent != oldChunk.content) {
         _chunks[chunkIdx] = MarkdownPageChunk(
           pageNumber: oldChunk.pageNumber,
           content: newChunkContent,
@@ -1845,7 +1845,21 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
   });
 
   @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    return _buildMark(element, preferredStyle, parentStyle);
+  }
+
+  @override
   Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+    return _buildMark(element, preferredStyle, null);
+  }
+
+  Widget? _buildMark(md.Element element, TextStyle? preferredStyle, TextStyle? parentStyle) {
     final colorHex = element.attributes['color'] ?? '#FDE047';
     Color baseColor;
     try {
@@ -1854,9 +1868,21 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
       baseColor = const Color(0xFFFDE047);
     }
 
-    final highlightBg = baseColor.withValues(alpha: isDark ? 0.40 : 0.35);
-    final borderCol = baseColor.withValues(alpha: isDark ? 0.85 : 0.75);
-    final textCol = preferredStyle?.color ?? (isDark ? const Color(0xFFF1F5F9) : const Color(0xFF1E293B));
+    final highlightBg = baseColor.withValues(alpha: isDark ? 0.30 : 0.22);
+    final borderCol = baseColor.withValues(alpha: isDark ? 0.75 : 0.60);
+
+    // Merge styles: ensure heading font size & weight from parentStyle or preferredStyle are preserved
+    final effectiveStyle = (parentStyle ?? const TextStyle()).merge(preferredStyle);
+    final effectiveFontSize = preferredStyle?.fontSize ?? parentStyle?.fontSize ?? baseFontSize;
+    final effectiveFontWeight = preferredStyle?.fontWeight ?? parentStyle?.fontWeight ?? FontWeight.w600;
+    final textCol = preferredStyle?.color ?? parentStyle?.color ?? (isDark ? const Color(0xFFF1F5F9) : const Color(0xFF0F172A));
+
+    final finalTextStyle = effectiveStyle.copyWith(
+      fontSize: effectiveFontSize,
+      fontWeight: effectiveFontWeight,
+      color: textCol,
+      letterSpacing: 0.2,
+    );
 
     // Check if the mark content is a fenced code block: ```latex ... ``` or ```math ... ``` or ```tex ... ```
     final fullText = element.textContent.trim();
@@ -1869,8 +1895,8 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
       final code = fencedLatexMatch.group(1)!.trim();
       return LatexFencedBlockWidget(
         rawLatex: code,
-        textColor: textColor,
-        baseFontSize: baseFontSize,
+        textColor: textCol,
+        baseFontSize: effectiveFontSize,
         codeBg: codeBg,
         isDark: isDark,
         highlightColor: colorHex,
@@ -1891,8 +1917,8 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
             InteractiveLatexView(
               rawLatex: childNode.textContent.trim(),
               isDisplay: isDisplay,
-              textColor: textColor,
-              baseFontSize: baseFontSize,
+              textColor: textCol,
+              baseFontSize: effectiveFontSize,
               codeBg: codeBg,
               isDark: isDark,
               highlightColor: colorHex,
@@ -1924,8 +1950,8 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
             childWidgets.add(
               LatexFencedBlockWidget(
                 rawLatex: fenced.group(1)!.trim(),
-                textColor: textColor,
-                baseFontSize: baseFontSize,
+                textColor: textCol,
+                baseFontSize: effectiveFontSize,
                 codeBg: codeBg,
                 isDark: isDark,
                 highlightColor: colorHex,
@@ -1940,10 +1966,7 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
             childWidgets.add(
               Text(
                 childNode.text,
-                style: (preferredStyle ?? const TextStyle()).copyWith(
-                  color: textCol,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: finalTextStyle,
               ),
             );
           }
@@ -1957,8 +1980,8 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
             childWidgets.add(
               LatexFencedBlockWidget(
                 rawLatex: fenced.group(1)!.trim(),
-                textColor: textColor,
-                baseFontSize: baseFontSize,
+                textColor: textCol,
+                baseFontSize: effectiveFontSize,
                 codeBg: codeBg,
                 isDark: isDark,
                 highlightColor: colorHex,
@@ -1973,10 +1996,7 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
             childWidgets.add(
               Text(
                 childNode.textContent,
-                style: (preferredStyle ?? const TextStyle()).copyWith(
-                  color: textCol,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: finalTextStyle,
               ),
             );
           }
@@ -2004,23 +2024,27 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
       if (text.isEmpty) return null;
       contentWidget = Text(
         text,
-        style: (preferredStyle ?? const TextStyle()).copyWith(
-          color: textCol,
-          fontWeight: FontWeight.w600,
-        ),
+        style: finalTextStyle,
       );
     }
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-      margin: const EdgeInsets.symmetric(horizontal: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+      margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
       decoration: BoxDecoration(
         color: highlightBg,
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(6),
         border: Border.all(
           color: borderCol,
           width: 1.0,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: baseColor.withValues(alpha: isDark ? 0.20 : 0.12),
+            blurRadius: 3,
+            offset: const Offset(0, 1),
+          ),
+        ],
       ),
       child: contentWidget,
     );

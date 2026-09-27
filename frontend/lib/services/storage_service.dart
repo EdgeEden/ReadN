@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class StorageService {
@@ -13,7 +14,7 @@ class StorageService {
   static const String _keyAiTemperature = 'readn_ai_temperature';
   static const String _keyAiIncludeContext = 'readn_ai_include_context';
 
-  static const String defaultBaseUrl = 'http://localhost:8000';
+  static const String defaultBaseUrl = 'http://localhost:18903';
   static const String defaultAiBaseUrl = 'https://api.deepseek.com';
   static const String defaultAiModel = '';
   static const String defaultAiSystemPrompt =
@@ -29,7 +30,17 @@ class StorageService {
   }
 
   String getBaseUrl() {
-    return _prefs.getString(_keyBaseUrl) ?? defaultBaseUrl;
+    final saved = _prefs.getString(_keyBaseUrl);
+    if (saved != null && saved.isNotEmpty) {
+      return saved;
+    }
+    if (kIsWeb) {
+      final origin = Uri.base.origin;
+      if (origin.isNotEmpty && origin != 'null' && !origin.startsWith('file:')) {
+        return origin;
+      }
+    }
+    return defaultBaseUrl;
   }
 
   Future<bool> setBaseUrl(String url) {

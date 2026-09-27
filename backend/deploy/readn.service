@@ -1,0 +1,20 @@
+[Unit]
+Description=ReadN PDF Cloud Backend Service (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/readn/backend
+ExecStart=/opt/readn/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 18903 --workers 2 --proxy-headers
+Restart=always
+RestartSec=5s
+Environment=PYTHONUNBUFFERED=1
+Environment=HOST=0.0.0.0
+Environment=PORT=18903
+
+# Security & Sandboxing (optional)
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

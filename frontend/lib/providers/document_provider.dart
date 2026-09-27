@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import '../models/document_model.dart';
 import '../services/api_service.dart';
 import '../services/storage_service.dart';
+import '../services/cache/doc_cache_service.dart';
 
 enum DocumentSortBy {
   updatedAt,
@@ -12,6 +13,7 @@ enum DocumentSortBy {
 class DocumentProvider extends ChangeNotifier {
   final ApiService apiService;
   final StorageService storageService;
+  final DocCacheService docCacheService;
 
   List<DocumentModel> _documents = [];
   bool _isLoading = false;
@@ -26,6 +28,7 @@ class DocumentProvider extends ChangeNotifier {
   DocumentProvider({
     required this.apiService,
     required this.storageService,
+    required this.docCacheService,
   }) {
     checkConnectionAndLoad();
   }
@@ -121,6 +124,12 @@ class DocumentProvider extends ChangeNotifier {
         fileBytes: bytes,
         filename: filename,
       );
+      // Immediately save uploaded bytes into local cache to avoid re-downloading
+      await docCacheService.savePdf(
+        newDoc.id,
+        Uint8List.fromList(bytes),
+        checksum: newDoc.checksum,
+      );
       _documents.insert(0, newDoc);
       _isBackendConnected = true;
       return newDoc;
@@ -155,6 +164,10 @@ class DocumentProvider extends ChangeNotifier {
   Future<bool> deleteDocument(String docId) async {
     try {
       await apiService.deleteDocument(docId);
+      // Clean up local cache
+      await docCacheService.deletePdf(docId);
+      await docCacheService.deleteMarkdown(docId);
+
       _documents.removeWhere((d) => d.id == docId);
       if (_activeDocument?.id == docId) {
         _activeDocument = null;
@@ -280,6 +293,7 @@ class DocumentProvider extends ChangeNotifier {
 
   Future<bool> saveMarkdown(String docId, String markdown) async {
     try {
+      await docCacheService.saveMarkdown(docId, markdown);
       await apiService.saveMarkdown(docId, markdown);
       return true;
     } catch (e) {

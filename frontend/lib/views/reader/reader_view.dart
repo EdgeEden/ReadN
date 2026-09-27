@@ -15,6 +15,7 @@ import '../../providers/document_provider.dart';
 import '../../providers/reader_settings_provider.dart';
 import '../../theme/app_theme.dart';
 import 'components/floating_selection_bar.dart';
+import 'components/markdown_html_support.dart';
 import 'components/markdown_reader_view.dart';
 import 'components/note_editor_dialog.dart';
 import 'components/ocr_dialog.dart';
@@ -51,6 +52,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   Uint8List? _pdfBytes;
   bool _isLoadingPdf = true;
   String? _loadError;
+  double? _downloadProgress;
+  String _downloadStatusText = '正在建立连接...';
   bool _isOcrBannerDismissed = false;
   OcrStatusInfo? _ocrStatusInfo;
   Timer? _ocrPollTimer;
@@ -174,28 +177,57 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   Future<void> _fetchMarkdownData({bool forceReload = false}) async {
     if (!forceReload && _markdownContent != null && _markdownContent!.isNotEmpty) return;
-    setState(() {
-      _isLoadingMarkdown = true;
-      _markdownError = null;
-    });
 
+    final docProvider = context.read<DocumentProvider>();
+    final docCache = docProvider.docCacheService;
+
+    // 1. Cache-first check
+    if (!forceReload) {
+      final cachedMd = await docCache.getMarkdown(_doc.id);
+      if (cachedMd != null && cachedMd.trim().isNotEmpty) {
+        if (mounted) {
+          setState(() {
+            _markdownContent = cachedMd;
+            _isLoadingMarkdown = false;
+            _doc = _doc.copyWith(hasMarkdown: true);
+          });
+          if (_outlineItems.isEmpty) {
+            _loadOutline();
+          }
+        }
+      }
+    }
+
+    if (_markdownContent == null || _markdownContent!.trim().isEmpty) {
+      setState(() {
+        _isLoadingMarkdown = true;
+        _markdownError = null;
+      });
+    }
+
+    // 2. Background cloud fetch
     try {
-      final res = await context.read<DocumentProvider>().getMarkdown(_doc.id);
+      final res = await docProvider.getMarkdown(_doc.id);
       if (mounted) {
         final content = (res['markdown'] as String?) ?? '';
-        setState(() {
-          _markdownContent = content;
-          _isLoadingMarkdown = false;
-          if (content.trim().isNotEmpty) {
+        if (content.trim().isNotEmpty) {
+          await docCache.saveMarkdown(_doc.id, content);
+          setState(() {
+            _markdownContent = content;
+            _isLoadingMarkdown = false;
             _doc = _doc.copyWith(hasMarkdown: true);
+          });
+          if (_outlineItems.isEmpty) {
+            _loadOutline();
           }
-        });
-        if (_outlineItems.isEmpty) {
-          _loadOutline();
+        } else {
+          setState(() {
+            _isLoadingMarkdown = false;
+          });
         }
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted && (_markdownContent == null || _markdownContent!.isEmpty)) {
         setState(() {
           _isLoadingMarkdown = false;
           _markdownError = e.toString();
@@ -254,28 +286,98 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   Future<void> _fetchPdfData() async {
+    final docProvider = context.read<DocumentProvider>();
+    final docCache = docProvider.docCacheService;
+
+    // 1. Cache-first check: if cached, load immediately without network download
+    try {
+      final cachedBytes = await docCache.getPdf(_doc.id, expectedChecksum: _doc.checksum);
+      if (cachedBytes != null && cachedBytes.isNotEmpty) {
+        if (mounted) {
+          setState(() {
+            _pdfBytes = cachedBytes;
+            _isLoadingPdf = false;
+            _loadError = null;
+          });
+        }
+        return;
+      }
+    } catch (e) {
+      debugPrint('Error checking local PDF cache: $e');
+    }
+
     setState(() {
       _isLoadingPdf = true;
       _loadError = null;
+      _downloadProgress = null;
+      _downloadStatusText = '正在建立连接...';
     });
 
+    http.Client? client;
     try {
-      final storage = context.read<DocumentProvider>().storageService;
+      final storage = docProvider.storageService;
       final rawUrl = _doc.getFileUrl(storage.getBaseUrl());
       final separator = rawUrl.contains('?') ? '&' : '?';
       final fileUrl = '$rawUrl${separator}t=${DateTime.now().millisecondsSinceEpoch}';
       final uri = Uri.parse(fileUrl);
 
-      final response = await http.get(uri).timeout(const Duration(seconds: 30));
-      if (response.statusCode == 200 || response.statusCode == 206) {
-        if (mounted) {
-          setState(() {
-            _pdfBytes = response.bodyBytes;
-            _isLoadingPdf = false;
-          });
+      client = http.Client();
+      final request = http.Request('GET', uri);
+      final streamedResponse = await client.send(request).timeout(const Duration(seconds: 30));
+
+      if (streamedResponse.statusCode != 200 && streamedResponse.statusCode != 206) {
+        throw Exception('HTTP ${streamedResponse.statusCode}: ${streamedResponse.reasonPhrase}');
+      }
+
+      final contentLength = streamedResponse.contentLength ?? _doc.fileSize;
+
+      final bytesBuilder = BytesBuilder(copy: false);
+      int received = 0;
+      DateTime lastUpdate = DateTime.now();
+
+      await for (final chunk in streamedResponse.stream.timeout(const Duration(seconds: 120))) {
+        bytesBuilder.add(chunk);
+        received += chunk.length;
+
+        final now = DateTime.now();
+        if (now.difference(lastUpdate).inMilliseconds > 80 || (contentLength > 0 && received >= contentLength)) {
+          lastUpdate = now;
+          if (mounted) {
+            setState(() {
+              if (contentLength > 0) {
+                _downloadProgress = (received / contentLength).clamp(0.0, 1.0);
+                final mbReceived = (received / (1024 * 1024)).toStringAsFixed(1);
+                final mbTotal = (contentLength / (1024 * 1024)).toStringAsFixed(1);
+                final pct = ((received / contentLength) * 100).toStringAsFixed(0);
+                _downloadStatusText = '正在极速传输: $mbReceived MB / $mbTotal MB ($pct%)';
+              } else {
+                final mbReceived = (received / (1024 * 1024)).toStringAsFixed(1);
+                _downloadStatusText = '已传输 $mbReceived MB...';
+              }
+            });
+          }
         }
-      } else {
-        throw Exception('HTTP ${response.statusCode}: ${response.reasonPhrase}');
+      }
+
+      if (mounted) {
+        setState(() {
+          _downloadStatusText = '传输完成，正在准备 WebAssembly 渲染...';
+        });
+      }
+
+      final completeBytes = bytesBuilder.takeBytes();
+      if (completeBytes.isEmpty) {
+        throw Exception('接收到的文档数据为空');
+      }
+
+      // Automatically persist to local cache
+      await docCache.savePdf(_doc.id, completeBytes, checksum: _doc.checksum);
+
+      if (mounted) {
+        setState(() {
+          _pdfBytes = completeBytes;
+          _isLoadingPdf = false;
+        });
       }
     } catch (e) {
       if (mounted) {
@@ -284,6 +386,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           _loadError = e.toString();
         });
       }
+    } finally {
+      client?.close();
     }
   }
 
@@ -830,44 +934,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   String _removeHighlightFromMarkdown(String markdown, String targetText) {
-    if (markdown.trim().isEmpty || targetText.trim().isEmpty) return markdown;
-
-    var result = markdown;
-    final trimmed = targetText.trim();
-    final escaped = RegExp.escape(trimmed);
-
-    // 1. Direct Markdown highlight: ==[#HEX]target== or ==target==
-    final directRegex = RegExp(
-      r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*' + escaped + r'\s*==',
-    );
-    if (directRegex.hasMatch(result)) {
-      result = result.replaceAllMapped(directRegex, (_) => trimmed);
-    }
-
-    // 2. HTML mark tag: <mark ...>target</mark>
-    final htmlMarkRegex = RegExp(
-      r'<mark(?:\s+[^>]*)?>\s*' + escaped + r'\s*</mark>',
-      caseSensitive: false,
-    );
-    if (htmlMarkRegex.hasMatch(result)) {
-      result = result.replaceAllMapped(htmlMarkRegex, (_) => trimmed);
-    }
-
-    // 3. Mathematical formulas with / without delimiters ($...$, $$...$$, ```latex...```)
-    final strippedFormula = trimmed.replaceAll(RegExp(r'^(\$\$|\$)|(\$\$|\$)$'), '').trim();
-    if (strippedFormula.isNotEmpty) {
-      final escapedStripped = RegExp.escape(strippedFormula);
-      final formulaHighlightRegex = RegExp(
-        r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*((\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
-            escapedStripped +
-            r'\s*(\$\$|\$|\\\]|\\\)|\n?```))\s*==',
-      );
-      if (formulaHighlightRegex.hasMatch(result)) {
-        result = result.replaceAllMapped(formulaHighlightRegex, (m) => m.group(1) ?? strippedFormula);
-      }
-    }
-
-    return result;
+    return removeHighlightFromMarkdown(markdown, targetText);
   }
 
   void _handleDeleteAnnotation(PdfAnnotation anno) async {
@@ -1304,6 +1371,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                               if (_isLoadingPdf)
                                 Center(
                                   child: Container(
+                                    width: 380,
                                     padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
                                     decoration: BoxDecoration(
                                       color: activeTheme.cardTheme.color,
@@ -1319,25 +1387,67 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                                     child: Column(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        SizedBox(
-                                          width: 44,
-                                          height: 44,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 3,
-                                            valueColor: AlwaysStoppedAnimation<Color>(
-                                              activeTheme.colorScheme.primary,
+                                        if (_downloadProgress != null)
+                                          SizedBox(
+                                            width: 54,
+                                            height: 54,
+                                            child: Stack(
+                                              alignment: Alignment.center,
+                                              children: [
+                                                CircularProgressIndicator(
+                                                  value: _downloadProgress,
+                                                  strokeWidth: 4,
+                                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                                    activeTheme.colorScheme.primary,
+                                                  ),
+                                                  backgroundColor: activeTheme.colorScheme.primary.withValues(alpha: 0.15),
+                                                ),
+                                                Text(
+                                                  '${((_downloadProgress ?? 0) * 100).toInt()}%',
+                                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                                ),
+                                              ],
+                                            ),
+                                          )
+                                        else
+                                          SizedBox(
+                                            width: 44,
+                                            height: 44,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 3,
+                                              valueColor: AlwaysStoppedAnimation<Color>(
+                                                activeTheme.colorScheme.primary,
+                                              ),
                                             ),
                                           ),
-                                        ),
                                         const SizedBox(height: 18),
                                         Text(
-                                          '正在载入《${widget.document.title}》...',
+                                          '正在载入《${widget.document.title}》',
                                           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                                          textAlign: TextAlign.center,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                         ),
-                                        const SizedBox(height: 6),
+                                        const SizedBox(height: 10),
+                                        if (_downloadProgress != null)
+                                          Padding(
+                                            padding: const EdgeInsets.only(bottom: 8),
+                                            child: ClipRRect(
+                                              borderRadius: BorderRadius.circular(4),
+                                              child: LinearProgressIndicator(
+                                                value: _downloadProgress,
+                                                minHeight: 4,
+                                                valueColor: AlwaysStoppedAnimation<Color>(
+                                                  activeTheme.colorScheme.primary,
+                                                ),
+                                                backgroundColor: activeTheme.colorScheme.primary.withValues(alpha: 0.12),
+                                              ),
+                                            ),
+                                          ),
                                         Text(
-                                          '文件大小 ${widget.document.formattedSize} • 正在准备 WebAssembly 渲染',
+                                          _downloadStatusText,
                                           style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                          textAlign: TextAlign.center,
                                         ),
                                       ],
                                     ),

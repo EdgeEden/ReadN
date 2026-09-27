@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import '../models/annotation_model.dart';
 import '../services/api_service.dart';
 import '../services/storage_service.dart';
+import '../services/cache/annotation_cache_service.dart';
 
 class AnnotationProvider extends ChangeNotifier {
   final ApiService apiService;
   final StorageService storageService;
+  final AnnotationCacheService annotationCacheService;
 
   String? _currentDocId;
   List<PdfAnnotation> _annotations = [];
@@ -20,6 +22,7 @@ class AnnotationProvider extends ChangeNotifier {
   AnnotationProvider({
     required this.apiService,
     required this.storageService,
+    required this.annotationCacheService,
   }) {
     _activeHighlightColor = storageService.getDefaultHighlightColor();
   }
@@ -81,14 +84,26 @@ class AnnotationProvider extends ChangeNotifier {
 
   Future<void> loadAnnotations(String docId) async {
     _currentDocId = docId;
-    _isLoading = true;
-    _annotations = [];
-    notifyListeners();
 
+    // 1. Cache-first instant rendering
+    final cached = annotationCacheService.getAnnotations(docId);
+    if (cached.isNotEmpty) {
+      _annotations = cached;
+      _isLoading = false;
+      notifyListeners();
+    } else {
+      _isLoading = true;
+      _annotations = [];
+      notifyListeners();
+    }
+
+    // 2. Background cloud fetch & sync
     try {
-      _annotations = await apiService.getAnnotations(docId);
+      final cloudList = await apiService.getAnnotations(docId);
+      _annotations = cloudList;
+      await annotationCacheService.saveAnnotations(docId, cloudList);
     } catch (e) {
-      debugPrint("Error loading annotations: $e");
+      debugPrint("Error loading cloud annotations (using cache): $e");
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -98,8 +113,9 @@ class AnnotationProvider extends ChangeNotifier {
   Future<PdfAnnotation?> addAnnotation(PdfAnnotation anno) async {
     if (_currentDocId == null) return null;
     
-    // Optimistic UI update
+    // Optimistic UI update & immediate local cache save
     _annotations.add(anno);
+    await annotationCacheService.saveAnnotations(_currentDocId!, _annotations);
     _isSyncing = true;
     notifyListeners();
 
@@ -108,6 +124,7 @@ class AnnotationProvider extends ChangeNotifier {
       final idx = _annotations.indexWhere((a) => a.id == anno.id);
       if (idx != -1) {
         _annotations[idx] = created;
+        await annotationCacheService.saveAnnotations(_currentDocId!, _annotations);
       }
       return created;
     } catch (e) {
@@ -144,6 +161,7 @@ class AnnotationProvider extends ChangeNotifier {
     if (_selectedAnnotation?.id == annoId) {
       _selectedAnnotation = updated;
     }
+    await annotationCacheService.saveAnnotations(_currentDocId!, _annotations);
     notifyListeners();
 
     try {
@@ -183,6 +201,7 @@ class AnnotationProvider extends ChangeNotifier {
     if (_selectedAnnotation?.id == annoId) {
       _selectedAnnotation = null;
     }
+    await annotationCacheService.saveAnnotations(_currentDocId!, _annotations);
     notifyListeners();
 
     try {
@@ -192,6 +211,7 @@ class AnnotationProvider extends ChangeNotifier {
       debugPrint("Failed to delete annotation on cloud: $e");
       // Revert if critical
       _annotations.insert(idx, removed);
+      await annotationCacheService.saveAnnotations(_currentDocId!, _annotations);
       notifyListeners();
       return false;
     }

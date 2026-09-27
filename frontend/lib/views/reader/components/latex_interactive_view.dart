@@ -123,11 +123,11 @@ class _InteractiveLatexViewState extends State<InteractiveLatexView> {
     if (widget.isDisplay) {
       // Display Math Block
       final bg = hasHighlight
-          ? highlightBase!.withValues(alpha: widget.isDark ? 0.35 : 0.28)
+          ? highlightBase!.withValues(alpha: widget.isDark ? 0.30 : 0.22)
           : (_isHovered ? (widget.isDark ? const Color(0x22818CF8) : const Color(0x114F46E5)) : Colors.transparent);
 
       final borderColor = hasHighlight
-          ? highlightBase!.withValues(alpha: widget.isDark ? 0.85 : 0.75)
+          ? highlightBase!.withValues(alpha: widget.isDark ? 0.75 : 0.60)
           : (_isHovered ? (widget.isDark ? const Color(0xFF6366F1) : const Color(0xFF818CF8)) : Colors.transparent);
 
       return Center(
@@ -143,17 +143,17 @@ class _InteractiveLatexViewState extends State<InteractiveLatexView> {
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               decoration: BoxDecoration(
                 color: bg,
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(8),
                 border: Border.all(
                   color: borderColor,
-                  width: hasHighlight ? 1.8 : 1.2,
+                  width: hasHighlight ? 1.2 : 1.0,
                 ),
                 boxShadow: hasHighlight
                     ? [
                         BoxShadow(
-                          color: highlightBase!.withValues(alpha: widget.isDark ? 0.25 : 0.15),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
+                          color: highlightBase!.withValues(alpha: widget.isDark ? 0.20 : 0.12),
+                          blurRadius: 4,
+                          offset: const Offset(0, 1),
                         )
                       ]
                     : null,
@@ -228,13 +228,13 @@ class _InteractiveLatexViewState extends State<InteractiveLatexView> {
     } else {
       // Inline Math
       final bg = hasHighlight
-          ? highlightBase!.withValues(alpha: widget.isDark ? 0.40 : 0.35)
+          ? highlightBase!.withValues(alpha: widget.isDark ? 0.30 : 0.22)
           : (_isHovered ? (widget.isDark ? const Color(0x33818CF8) : const Color(0x224F46E5)) : Colors.transparent);
 
       final border = hasHighlight
           ? Border.all(
-              color: highlightBase!.withValues(alpha: widget.isDark ? 0.85 : 0.75),
-              width: 1.2,
+              color: highlightBase!.withValues(alpha: widget.isDark ? 0.75 : 0.60),
+              width: 1.0,
             )
           : (_isHovered
               ? Border.all(
@@ -254,12 +254,21 @@ class _InteractiveLatexViewState extends State<InteractiveLatexView> {
             waitDuration: const Duration(milliseconds: 400),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 150),
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
               margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
               decoration: BoxDecoration(
                 color: bg,
-                borderRadius: BorderRadius.circular(4),
+                borderRadius: BorderRadius.circular(6),
                 border: border,
+                boxShadow: hasHighlight
+                    ? [
+                        BoxShadow(
+                          color: highlightBase!.withValues(alpha: widget.isDark ? 0.20 : 0.12),
+                          blurRadius: 3,
+                          offset: const Offset(0, 1),
+                        ),
+                      ]
+                    : null,
               ),
               child: mathWidget,
             ),
@@ -355,7 +364,7 @@ class _LatexFencedBlockWidgetState extends State<LatexFencedBlockWidget> {
     }
 
     final borderColor = hasHighlight
-        ? highlightBase!.withValues(alpha: widget.isDark ? 0.85 : 0.75)
+        ? highlightBase!.withValues(alpha: widget.isDark ? 0.75 : 0.60)
         : (widget.isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1));
 
     final cardBg = hasHighlight
@@ -367,7 +376,7 @@ class _LatexFencedBlockWidgetState extends State<LatexFencedBlockWidget> {
       decoration: BoxDecoration(
         color: cardBg,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderColor, width: hasHighlight ? 1.8 : 1.0),
+        border: Border.all(color: borderColor, width: hasHighlight ? 1.2 : 1.0),
         boxShadow: [
           BoxShadow(
             color: hasHighlight

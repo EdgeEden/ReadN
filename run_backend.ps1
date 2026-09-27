@@ -3,5 +3,5 @@ Write-Host "Starting ReadN FastAPI Backend Server..." -ForegroundColor Cyan
 Write-Host "=========================================" -ForegroundColor Cyan
 
 Set-Location -Path "$PSScriptRoot\backend"
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn app.main:app --host 0.0.0.0 --port 18903 --reload
 

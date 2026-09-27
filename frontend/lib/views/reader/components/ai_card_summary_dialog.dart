@@ -10,6 +10,7 @@ import '../../../models/annotation_model.dart';
 import '../../../services/ai_service.dart';
 import '../../../theme/app_theme.dart';
 import 'latex_interactive_view.dart';
+import 'markdown_html_support.dart';
 import 'markdown_reader_view.dart';
 
 /// Modal dialog that prompts the AI to summarize prior dialogue / answers into a structured Markdown Knowledge Card
@@ -587,6 +588,10 @@ class _AiCardSummaryDialogState extends State<AiCardSummaryDialog> {
                             'latex': _SummaryLatexBuilder(
                               isDark: isDark,
                               textColor: isDark ? const Color(0xFFF1F5F9) : const Color(0xFF1E293B),
+                            ),
+                            'mark': CommonMarkElementBuilder(
+                              isDark: isDark,
+                              fontSize: 13.5,
                             ),
                           },
                           styleSheet: MarkdownStyleSheet(

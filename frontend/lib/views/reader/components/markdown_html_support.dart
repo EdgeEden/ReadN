@@ -78,6 +78,229 @@ Color? parseHtmlColor(String? colorStr) {
   return null;
 }
 
+/// Robustly applies Markdown fluorescent highlight (`==text==` or `==[#HEX]text==`) to markdown content,
+/// correctly preserving line prefixes (Headings `#`, list markers `-`/`1.`, blockquotes `>`) and
+/// properly handling multiline selections without corrupting Markdown block syntax.
+String applyHighlightToMarkdown(String content, String selectedText, String colorHex) {
+  if (content.isEmpty || selectedText.trim().isEmpty) return content;
+
+  final trimmed = selectedText.trim();
+  final normalizedHex = colorHex.toUpperCase();
+  final tagPrefix = (normalizedHex == '#FDE047' || normalizedHex == 'FDE047')
+      ? '=='
+      : '==[$normalizedHex]';
+
+  // 1. Single-line selection
+  if (!trimmed.contains('\n')) {
+    final replacement = '$tagPrefix$trimmed==';
+    if (content.contains(replacement)) return content;
+
+    // Check if the target is an entire heading line: e.g. "## Heading"
+    final headingLineRegex = RegExp(
+      r'^([ \t]*#{1,6}[ \t]+)' + RegExp.escape(trimmed) + r'([ \t]*)$',
+      multiLine: true,
+    );
+    if (headingLineRegex.hasMatch(content)) {
+      return content.replaceFirstMapped(
+        headingLineRegex,
+        (m) => '${m.group(1)}$tagPrefix$trimmed==${m.group(2)}',
+      );
+    }
+
+    // Check if the target is inside a heading line: e.g. "## 7. Heading text"
+    final insideHeadingRegex = RegExp(
+      r'^([ \t]*#{1,6}[ \t]+.*?)(?:' + RegExp.escape(trimmed) + r')(.*)$',
+      multiLine: true,
+    );
+    if (insideHeadingRegex.hasMatch(content)) {
+      return content.replaceFirstMapped(
+        insideHeadingRegex,
+        (m) => '${m.group(1)}$tagPrefix$trimmed==${m.group(2)}',
+      );
+    }
+
+    // Check if target is a list item: e.g. "- Item" or "1. Item"
+    final listLineRegex = RegExp(
+      r'^([ \t]*(?:[-*+]|\d+\.)[ \t]+)' + RegExp.escape(trimmed) + r'([ \t]*)$',
+      multiLine: true,
+    );
+    if (listLineRegex.hasMatch(content)) {
+      return content.replaceFirstMapped(
+        listLineRegex,
+        (m) => '${m.group(1)}$tagPrefix$trimmed==${m.group(2)}',
+      );
+    }
+
+    // Direct exact containment
+    if (content.contains(trimmed)) {
+      return content.replaceFirst(trimmed, replacement);
+    }
+
+    // Flexible whitespace match
+    final tokens = trimmed.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
+    if (tokens.isNotEmpty) {
+      final flexPattern = tokens.map((t) => RegExp.escape(t)).join(r'\s+');
+      final flexRegex = RegExp(flexPattern);
+      final match = flexRegex.firstMatch(content);
+      if (match != null) {
+        final matchedText = match.group(0)!;
+        return content.replaceFirst(matchedText, '$tagPrefix$matchedText==');
+      }
+    }
+    return content;
+  }
+
+  // 2. Multiline selection
+  var updatedContent = content;
+  final lines = trimmed
+      .split(RegExp(r'\r?\n'))
+      .map((l) => l.trim())
+      .where((l) => l.isNotEmpty)
+      .toList();
+
+  for (final line in lines) {
+    if (line.isEmpty) continue;
+    final lineReplacement = '$tagPrefix$line==';
+    if (updatedContent.contains(lineReplacement)) {
+      continue; // Already highlighted
+    }
+
+    // Check heading line
+    final headingLineRegex = RegExp(
+      r'^([ \t]*#{1,6}[ \t]+)' + RegExp.escape(line) + r'([ \t]*)$',
+      multiLine: true,
+    );
+    if (headingLineRegex.hasMatch(updatedContent)) {
+      updatedContent = updatedContent.replaceFirstMapped(
+        headingLineRegex,
+        (m) => '${m.group(1)}$tagPrefix$line==${m.group(2)}',
+      );
+      continue;
+    }
+
+    // Check inside heading
+    final insideHeadingRegex = RegExp(
+      r'^([ \t]*#{1,6}[ \t]+.*?)(?:' + RegExp.escape(line) + r')(.*)$',
+      multiLine: true,
+    );
+    if (insideHeadingRegex.hasMatch(updatedContent)) {
+      updatedContent = updatedContent.replaceFirstMapped(
+        insideHeadingRegex,
+        (m) => '${m.group(1)}$tagPrefix$line==${m.group(2)}',
+      );
+      continue;
+    }
+
+    // Check list item
+    final listLineRegex = RegExp(
+      r'^([ \t]*(?:[-*+]|\d+\.)[ \t]+)' + RegExp.escape(line) + r'([ \t]*)$',
+      multiLine: true,
+    );
+    if (listLineRegex.hasMatch(updatedContent)) {
+      updatedContent = updatedContent.replaceFirstMapped(
+        listLineRegex,
+        (m) => '${m.group(1)}$tagPrefix$line==${m.group(2)}',
+      );
+      continue;
+    }
+
+    // Check blockquote
+    final quoteLineRegex = RegExp(
+      r'^([ \t]*>[ \t]*)' + RegExp.escape(line) + r'([ \t]*)$',
+      multiLine: true,
+    );
+    if (quoteLineRegex.hasMatch(updatedContent)) {
+      updatedContent = updatedContent.replaceFirstMapped(
+        quoteLineRegex,
+        (m) => '${m.group(1)}$tagPrefix$line==${m.group(2)}',
+      );
+      continue;
+    }
+
+    // Direct line match
+    if (updatedContent.contains(line)) {
+      updatedContent = updatedContent.replaceFirst(line, lineReplacement);
+      continue;
+    }
+
+    // Flexible whitespace matching for the line
+    final tokens = line.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
+    if (tokens.isNotEmpty) {
+      final flexPattern = tokens.map((t) => RegExp.escape(t)).join(r'\s+');
+      final flexRegex = RegExp(flexPattern);
+      final match = flexRegex.firstMatch(updatedContent);
+      if (match != null) {
+        final matchedText = match.group(0)!;
+        updatedContent = updatedContent.replaceFirst(matchedText, '$tagPrefix$matchedText==');
+      }
+    }
+  }
+
+  return updatedContent;
+}
+
+/// Robustly removes highlights (`==...==` or `<mark>...</mark>`) from markdown content
+String removeHighlightFromMarkdown(String markdown, String targetText) {
+  if (markdown.trim().isEmpty || targetText.trim().isEmpty) return markdown;
+
+  var result = markdown;
+  final trimmed = targetText.trim();
+  final escaped = RegExp.escape(trimmed);
+
+  // 1. Direct Markdown highlight: ==[#HEX]target== or ==target==
+  final directRegex = RegExp(
+    r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*' + escaped + r'\s*==',
+  );
+  if (directRegex.hasMatch(result)) {
+    result = result.replaceAllMapped(directRegex, (_) => trimmed);
+  }
+
+  // 2. HTML mark tag: <mark ...>target</mark>
+  final htmlMarkRegex = RegExp(
+    r'<mark(?:\s+[^>]*)?>\s*' + escaped + r'\s*</mark>',
+    caseSensitive: false,
+  );
+  if (htmlMarkRegex.hasMatch(result)) {
+    result = result.replaceAllMapped(htmlMarkRegex, (_) => trimmed);
+  }
+
+  // 3. Mathematical formulas with / without delimiters ($...$, $$...$$, ```latex...```)
+  final strippedFormula = trimmed.replaceAll(RegExp(r'^(\$\$|\$)|(\$\$|\$)$'), '').trim();
+  if (strippedFormula.isNotEmpty) {
+    final escapedStripped = RegExp.escape(strippedFormula);
+    final formulaHighlightRegex = RegExp(
+      r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*((\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
+          escapedStripped +
+          r'\s*(\$\$|\$|\\\]|\\\)|\n?```))\s*==',
+    );
+    if (formulaHighlightRegex.hasMatch(result)) {
+      result = result.replaceAllMapped(formulaHighlightRegex, (m) => m.group(1) ?? strippedFormula);
+    }
+  }
+
+  // 4. Multiline line-by-line removal
+  final lines = trimmed
+      .split(RegExp(r'\r?\n'))
+      .map((l) => l.trim())
+      .where((l) => l.isNotEmpty)
+      .toList();
+  if (lines.length > 1) {
+    for (final line in lines) {
+      final lineEscaped = RegExp.escape(line);
+      final lineDirectRegex = RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*' + lineEscaped + r'\s*==');
+      if (lineDirectRegex.hasMatch(result)) {
+        result = result.replaceAllMapped(lineDirectRegex, (_) => line);
+      }
+      final lineHtmlRegex = RegExp(r'<mark(?:\s+[^>]*)?>\s*' + lineEscaped + r'\s*</mark>', caseSensitive: false);
+      if (lineHtmlRegex.hasMatch(result)) {
+        result = result.replaceAllMapped(lineHtmlRegex, (_) => line);
+      }
+    }
+  }
+
+  return result;
+}
+
 /// Preprocesses Markdown containing raw HTML blocks (like `<table>`, `<div>`, `<p>`, `<h1>`-`<h6>`, `<ul>`, `<ol>`, etc.)
 /// into standardized GFM markdown or normalized custom HTML elements that flutter_markdown can natively render.
 String preprocessMarkdownHtml(String raw) {
@@ -884,4 +1107,85 @@ class HtmlTableElementBuilder extends MarkdownElementBuilder {
     );
   }
 }
+
+/// Renders `<mark>` elements as elegant rounded-rectangle badges with soft border, translucent background, and subtle shadow.
+class CommonMarkElementBuilder extends MarkdownElementBuilder {
+  final bool isDark;
+  final double? fontSize;
+  final Color? textColor;
+
+  CommonMarkElementBuilder({
+    required this.isDark,
+    this.fontSize,
+    this.textColor,
+  });
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    return _buildMark(element, preferredStyle, parentStyle);
+  }
+
+  @override
+  Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+    return _buildMark(element, preferredStyle, null);
+  }
+
+  Widget? _buildMark(md.Element element, TextStyle? preferredStyle, TextStyle? parentStyle) {
+    final colorHex = element.attributes['color'] ?? '#FDE047';
+    Color baseColor;
+    try {
+      baseColor = AppTheme.parseHexColor(colorHex);
+    } catch (_) {
+      baseColor = const Color(0xFFFDE047);
+    }
+
+    final highlightBg = baseColor.withValues(alpha: isDark ? 0.30 : 0.22);
+    final borderCol = baseColor.withValues(alpha: isDark ? 0.75 : 0.60);
+
+    final effectiveStyle = (parentStyle ?? const TextStyle()).merge(preferredStyle);
+    final effectiveFontSize = preferredStyle?.fontSize ?? parentStyle?.fontSize ?? fontSize ?? 14.0;
+    final effectiveFontWeight = preferredStyle?.fontWeight ?? parentStyle?.fontWeight ?? FontWeight.w500;
+    final textCol = preferredStyle?.color ?? parentStyle?.color ?? textColor ?? (isDark ? const Color(0xFFF1F5F9) : const Color(0xFF0F172A));
+
+    final finalTextStyle = effectiveStyle.copyWith(
+      fontSize: effectiveFontSize,
+      fontWeight: effectiveFontWeight,
+      color: textCol,
+      letterSpacing: 0.2,
+    );
+
+    final text = element.textContent;
+    if (text.isEmpty) return null;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+      margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+      decoration: BoxDecoration(
+        color: highlightBg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: borderCol,
+          width: 1.0,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: baseColor.withValues(alpha: isDark ? 0.20 : 0.12),
+            blurRadius: 3,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Text(
+        text,
+        style: finalTextStyle,
+      ),
+    );
+  }
+}
+
 

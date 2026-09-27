@@ -10,6 +10,7 @@ import '../../../providers/reader_settings_provider.dart';
 import '../../../theme/app_theme.dart';
 import 'knowledge_card_dialog.dart';
 import 'latex_interactive_view.dart';
+import 'markdown_html_support.dart';
 import 'markdown_reader_view.dart';
 
 class CardsSidebarTab extends StatefulWidget {
@@ -397,6 +398,10 @@ class _CardsSidebarTabState extends State<CardsSidebarTab> {
                                       'latex': _CardsSidebarLatexBuilder(
                                         isDark: isDark,
                                         textColor: isDark ? const Color(0xFFF1F5F9) : const Color(0xFF1E293B),
+                                      ),
+                                      'mark': CommonMarkElementBuilder(
+                                        isDark: isDark,
+                                        fontSize: 12,
                                       ),
                                     },
                                     styleSheet: MarkdownStyleSheet(

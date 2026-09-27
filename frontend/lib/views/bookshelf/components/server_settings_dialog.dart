@@ -90,7 +90,7 @@ class _ServerSettingsDialogState extends State<ServerSettingsDialog> {
               controller: _urlController,
               decoration: InputDecoration(
                 labelText: '后端服务 URL',
-                hintText: 'http://localhost:8000 或 http://你的云服务器IP:8000',
+                hintText: 'http://localhost:18903 或 http://你的云服务器IP:18903',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 prefixIcon: const Icon(Icons.link_rounded),
               ),
