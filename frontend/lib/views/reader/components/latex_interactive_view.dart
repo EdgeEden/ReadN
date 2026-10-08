@@ -254,11 +254,17 @@ class _InteractiveLatexViewState extends State<InteractiveLatexView> {
             waitDuration: const Duration(milliseconds: 400),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 150),
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-              margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+              padding: EdgeInsets.symmetric(
+                horizontal: (_isHovered || hasHighlight) ? 4 : 1.5,
+                vertical: (_isHovered || hasHighlight) ? 1.5 : 0.5,
+              ),
+              margin: EdgeInsets.symmetric(
+                horizontal: (_isHovered || hasHighlight) ? 2 : 0.5,
+                vertical: 0.5,
+              ),
               decoration: BoxDecoration(
                 color: bg,
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(4),
                 border: border,
                 boxShadow: hasHighlight
                     ? [

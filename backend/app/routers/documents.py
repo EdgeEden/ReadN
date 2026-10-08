@@ -262,6 +262,19 @@ async def update_document_markdown(
     async with aiofiles.open(md_path, "w", encoding="utf-8") as f:
         await f.write(update_req.markdown)
 
+    if update_req.markdown.strip():
+        doc.ocr_status = "completed"
+        ocr_job_manager.set_job_status(
+            doc_id,
+            "completed",
+            progress=1.0,
+            current_page=doc.page_count,
+            total_pages=doc.page_count,
+            message="OCR Markdown 已同步至云端"
+        )
+        await db.commit()
+        await db.refresh(doc)
+
     return MarkdownResponse(
         doc_id=doc_id,
         has_markdown=True,

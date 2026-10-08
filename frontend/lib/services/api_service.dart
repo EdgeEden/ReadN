@@ -18,9 +18,49 @@ class ApiService {
     return Uri.parse('$cleanBase$cleanPath');
   }
 
+  Future<http.Response> _executeWithRetry(
+    Future<http.Response> Function(http.Client client) action,
+  ) async {
+    try {
+      return await action(_client);
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('connection closed') ||
+          msg.contains('connection reset') ||
+          msg.contains('connection refused') ||
+          msg.contains('broken pipe') ||
+          msg.contains('socketexception') ||
+          msg.contains('clientexception')) {
+        // Stale pooled connection dropped by remote server/NAT. Retry once with a fresh client.
+        final freshClient = http.Client();
+        try {
+          return await action(freshClient);
+        } finally {
+          freshClient.close();
+        }
+      }
+      rethrow;
+    }
+  }
+
+  Future<http.Response> _get(Uri uri, {Map<String, String>? headers}) =>
+      _executeWithRetry((c) => c.get(uri, headers: headers));
+
+  Future<http.Response> _post(Uri uri, {Map<String, String>? headers, Object? body}) =>
+      _executeWithRetry((c) => c.post(uri, headers: headers, body: body));
+
+  Future<http.Response> _put(Uri uri, {Map<String, String>? headers, Object? body}) =>
+      _executeWithRetry((c) => c.put(uri, headers: headers, body: body));
+
+  Future<http.Response> _patch(Uri uri, {Map<String, String>? headers, Object? body}) =>
+      _executeWithRetry((c) => c.patch(uri, headers: headers, body: body));
+
+  Future<http.Response> _delete(Uri uri, {Map<String, String>? headers, Object? body}) =>
+      _executeWithRetry((c) => c.delete(uri, headers: headers, body: body));
+
   Future<bool> checkHealth() async {
     try {
-      final res = await _client.get(_uri('/api/health')).timeout(const Duration(seconds: 4));
+      final res = await _get(_uri('/api/health')).timeout(const Duration(seconds: 4));
       return res.statusCode == 200;
     } catch (_) {
       return false;
@@ -53,7 +93,7 @@ class ApiService {
   }
 
   Future<List<DocumentModel>> getDocuments() async {
-    final res = await _client.get(_uri('/api/documents'));
+    final res = await _get(_uri('/api/documents'));
     if (res.statusCode == 200) {
       final List<dynamic> list = jsonDecode(utf8.decode(res.bodyBytes));
       return list.map((item) => DocumentModel.fromJson(item as Map<String, dynamic>)).toList();
@@ -63,7 +103,7 @@ class ApiService {
   }
 
   Future<DocumentModel> getDocument(String docId) async {
-    final res = await _client.get(_uri('/api/documents/$docId'));
+    final res = await _get(_uri('/api/documents/$docId'));
     if (res.statusCode == 200) {
       final json = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       return DocumentModel.fromJson(json);
@@ -73,7 +113,7 @@ class ApiService {
   }
 
   Future<DocumentModel> updateDocumentTitle(String docId, String newTitle) async {
-    final res = await _client.patch(
+    final res = await _patch(
       _uri('/api/documents/$docId'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'title': newTitle}),
@@ -87,8 +127,8 @@ class ApiService {
   }
 
   Future<void> deleteDocument(String docId) async {
-    final res = await _client.delete(_uri('/api/documents/$docId'));
-    if (res.statusCode != 200 && res.statusCode != 204) {
+    final res = await _delete(_uri('/api/documents/$docId'));
+    if (res.statusCode != 200 && res.statusCode != 204 && res.statusCode != 404) {
       throw Exception('Failed to delete document: ${res.statusCode}');
     }
   }
@@ -100,7 +140,7 @@ class ApiService {
 
   // Annotations
   Future<List<PdfAnnotation>> getAnnotations(String docId) async {
-    final res = await _client.get(_uri('/api/documents/$docId/annotations'));
+    final res = await _get(_uri('/api/documents/$docId/annotations'));
     if (res.statusCode == 200) {
       final List<dynamic> list = jsonDecode(utf8.decode(res.bodyBytes));
       return list.map((item) => PdfAnnotation.fromJson(item as Map<String, dynamic>)).toList();
@@ -119,7 +159,7 @@ class ApiService {
       'selected_text': annotation.selectedText,
       'note_content': annotation.noteContent,
     };
-    final res = await _client.post(
+    final res = await _post(
       _uri('/api/documents/$docId/annotations'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(payload),
@@ -148,7 +188,7 @@ class ApiService {
     if (type != null) payload['type'] = type;
     if (rects != null) payload['rects'] = rects.map((r) => r.toJson()).toList();
 
-    final res = await _client.put(
+    final res = await _put(
       _uri('/api/documents/$docId/annotations/$annotationId'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(payload),
@@ -162,8 +202,8 @@ class ApiService {
   }
 
   Future<void> deleteAnnotation(String docId, String annotationId) async {
-    final res = await _client.delete(_uri('/api/documents/$docId/annotations/$annotationId'));
-    if (res.statusCode != 200 && res.statusCode != 204) {
+    final res = await _delete(_uri('/api/documents/$docId/annotations/$annotationId'));
+    if (res.statusCode != 200 && res.statusCode != 204 && res.statusCode != 404) {
       throw Exception('Failed to delete annotation: ${res.statusCode}');
     }
   }
@@ -180,7 +220,7 @@ class ApiService {
         'note_content': a.noteContent,
       }).toList()
     };
-    final res = await _client.post(
+    final res = await _post(
       _uri('/api/documents/$docId/annotations/batch'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(payload),
@@ -216,7 +256,7 @@ class ApiService {
       'use_doc_unwarping': useDocUnwarping,
       'use_chart_recognition': useChartRecognition,
     };
-    final res = await _client.post(
+    final res = await _post(
       _uri('/api/documents/$docId/ocr'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(payload),
@@ -229,7 +269,7 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> getOcrStatus(String docId) async {
-    final res = await _client.get(_uri('/api/documents/$docId/ocr-status'));
+    final res = await _get(_uri('/api/documents/$docId/ocr-status'));
     if (res.statusCode == 200) {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     } else {
@@ -246,7 +286,7 @@ class ApiService {
       'page_scope': pageScope,
       'target_pages': targetPages,
     };
-    final res = await _client.post(
+    final res = await _post(
       _uri('/api/documents/$docId/ocr/revert'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(payload),
@@ -261,7 +301,7 @@ class ApiService {
 
   // Markdown Document API
   Future<Map<String, dynamic>> getMarkdown(String docId) async {
-    final res = await _client.get(_uri('/api/documents/$docId/markdown'));
+    final res = await _get(_uri('/api/documents/$docId/markdown'));
     if (res.statusCode == 200) {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     } else {
@@ -271,7 +311,7 @@ class ApiService {
 
   Future<Map<String, dynamic>> saveMarkdown(String docId, String markdown) async {
     final payload = {'markdown': markdown};
-    final res = await _client.put(
+    final res = await _put(
       _uri('/api/documents/$docId/markdown'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(payload),

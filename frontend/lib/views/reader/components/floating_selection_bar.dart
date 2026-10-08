@@ -93,29 +93,26 @@ class FloatingSelectionBar extends StatelessWidget {
             ...AppTheme.highlightColors.map((item) {
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 3),
-                child: Tooltip(
-                  message: '荧光高亮 (${item.label})',
-                  child: InkWell(
-                    onTap: () => onHighlight(item.hex),
-                    borderRadius: BorderRadius.circular(14),
-                    child: Container(
-                      width: 22,
-                      height: 22,
-                      decoration: BoxDecoration(
-                        color: item.color,
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: isDark ? Colors.white : Colors.black.withValues(alpha: 0.2),
-                          width: 1.5,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: item.color.withValues(alpha: 0.5),
-                            blurRadius: 4,
-                            offset: const Offset(0, 1),
-                          ),
-                        ],
+                child: InkWell(
+                  onTap: () => onHighlight(item.hex),
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    width: 22,
+                    height: 22,
+                    decoration: BoxDecoration(
+                      color: item.color,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: isDark ? Colors.white : Colors.black.withValues(alpha: 0.2),
+                        width: 1.5,
                       ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: item.color.withValues(alpha: 0.5),
+                          blurRadius: 4,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -129,56 +126,44 @@ class FloatingSelectionBar extends StatelessWidget {
             ),
             // Ask AI button
             if (onAskAi != null) ...[
-              Tooltip(
-                message: '向 AI 提问/解析/翻译此段内容',
-                child: TextButton.icon(
-                  style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFF8B5CF6),
-                    backgroundColor: const Color(0xFF8B5CF6).withValues(alpha: isDark ? 0.22 : 0.1),
-                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                    visualDensity: VisualDensity.compact,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  ),
-                  onPressed: onAskAi,
-                  icon: const Icon(Icons.auto_awesome_rounded, size: 15, color: Color(0xFF8B5CF6)),
-                  label: const Text('问AI', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF8B5CF6))),
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF8B5CF6),
+                  backgroundColor: const Color(0xFF8B5CF6).withValues(alpha: isDark ? 0.22 : 0.1),
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  visualDensity: VisualDensity.compact,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 ),
+                onPressed: onAskAi,
+                icon: const Icon(Icons.auto_awesome_rounded, size: 15, color: Color(0xFF8B5CF6)),
+                label: const Text('问AI', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF8B5CF6))),
               ),
               const SizedBox(width: 4),
             ],
             // Add Note button
-            Tooltip(
-              message: '添加批注与心得',
-              child: TextButton.icon(
-                style: TextButton.styleFrom(
-                  foregroundColor: textColor,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  visualDensity: VisualDensity.compact,
-                ),
-                onPressed: onAddNote,
-                icon: const Icon(Icons.edit_note_rounded, size: 18, color: Color(0xFF6366F1)),
-                label: Text('批注', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: textColor)),
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                foregroundColor: textColor,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                visualDensity: VisualDensity.compact,
               ),
+              onPressed: onAddNote,
+              icon: const Icon(Icons.edit_note_rounded, size: 18, color: Color(0xFF6366F1)),
+              label: Text('批注', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: textColor)),
             ),
             // Copy button
-            Tooltip(
-              message: '复制文本',
-              child: IconButton(
-                icon: Icon(Icons.copy_rounded, size: 16, color: iconColor),
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(),
-                onPressed: () => _copyToClipboard(context),
-              ),
+            IconButton(
+              icon: Icon(Icons.copy_rounded, size: 16, color: iconColor),
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(),
+              onPressed: () => _copyToClipboard(context),
             ),
             // Close / Dismiss button
-            Tooltip(
-              message: '关闭菜单',
-              child: IconButton(
-                icon: Icon(Icons.close_rounded, size: 16, color: iconColor.withValues(alpha: 0.6)),
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(),
-                onPressed: onDismiss,
-              ),
+            IconButton(
+              icon: Icon(Icons.close_rounded, size: 16, color: iconColor.withValues(alpha: 0.6)),
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(),
+              onPressed: onDismiss,
             ),
           ],
         ),

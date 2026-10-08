@@ -302,5 +302,33 @@ class DocumentProvider extends ChangeNotifier {
       return false;
     }
   }
+
+  Future<bool> syncClientOcrResult(String docId, String markdown) async {
+    try {
+      await docCacheService.saveMarkdown(docId, markdown);
+      await apiService.saveMarkdown(docId, markdown);
+
+      // Update in-memory document state
+      final index = _documents.indexWhere((d) => d.id == docId);
+      if (index != -1) {
+        _documents[index] = _documents[index].copyWith(
+          hasMarkdown: true,
+          ocrStatus: "completed",
+        );
+      }
+      if (_activeDocument?.id == docId) {
+        _activeDocument = _activeDocument?.copyWith(
+          hasMarkdown: true,
+          ocrStatus: "completed",
+        );
+      }
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _errorMessage = '同步 OCR Markdown 失败: $e';
+      notifyListeners();
+      return false;
+    }
+  }
 }
 

@@ -883,6 +883,19 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     if (trimmedLatex.isEmpty) return;
 
     final docProvider = context.read<DocumentProvider>();
+    final annoProvider = context.read<AnnotationProvider>();
+
+    // Also remove the corresponding PdfAnnotation from annoProvider
+    final formulaText = isDisplay ? '\$\$$trimmedLatex\$\$' : '\$$trimmedLatex\$';
+    final matchingAnno = annoProvider.annotations.cast<PdfAnnotation?>().firstWhere(
+      (a) => a?.docId == widget.document.id &&
+             (a?.selectedText.trim() == formulaText || a?.selectedText.trim() == trimmedLatex),
+      orElse: () => null,
+    );
+    if (matchingAnno != null) {
+      await annoProvider.deleteAnnotation(matchingAnno.id);
+      docProvider.updateAnnotationCount(widget.document.id, -1);
+    }
 
     int chunkIdx = _chunks.indexWhere((c) => c.pageNumber == pageNumber);
     if (chunkIdx == -1 && _chunks.isNotEmpty) {
@@ -1708,7 +1721,7 @@ class _LatexElementBuilder extends MarkdownElementBuilder {
     final highlightColor = element.attributes['highlightColor'];
 
     try {
-      return InteractiveLatexView(
+      final latexView = InteractiveLatexView(
         rawLatex: text,
         isDisplay: isDisplay,
         textColor: textColor,
@@ -1721,6 +1734,22 @@ class _LatexElementBuilder extends MarkdownElementBuilder {
         onRemoveHighlight: onRemoveHighlight,
         onAddNote: onAddNote,
         onAskAi: onAskAi,
+      );
+
+      if (isDisplay) {
+        return latexView;
+      }
+
+      return Text.rich(
+        TextSpan(
+          children: [
+            WidgetSpan(
+              alignment: PlaceholderAlignment.middle,
+              baseline: TextBaseline.alphabetic,
+              child: latexView,
+            ),
+          ],
+        ),
       );
     } catch (_) {
       return Text(text, style: preferredStyle);
@@ -2016,7 +2045,23 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
 
     if (childWidgets.length == 1) {
       final first = childWidgets.first;
-      if (first is InteractiveLatexView || first is LatexFencedBlockWidget) {
+      if (first is InteractiveLatexView) {
+        if (first.isDisplay) {
+          return first;
+        }
+        return Text.rich(
+          TextSpan(
+            children: [
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                baseline: TextBaseline.alphabetic,
+                child: first,
+              ),
+            ],
+          ),
+        );
+      }
+      if (first is LatexFencedBlockWidget) {
         return first;
       }
     }
@@ -2151,11 +2196,23 @@ class _AnnotationBadgeElementBuilder extends MarkdownElementBuilder {
     final anno = annotationsById[id];
     if (anno == null) return null;
 
-    return buildBadgeWidget(
+    final badge = buildBadgeWidget(
       anno: anno,
       isDark: isDark,
       onOpenCard: onOpenCard,
       onOpenNote: onOpenNote,
+    );
+
+    return Text.rich(
+      TextSpan(
+        children: [
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            baseline: TextBaseline.alphabetic,
+            child: badge,
+          ),
+        ],
+      ),
     );
   }
 }

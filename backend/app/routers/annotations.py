@@ -135,7 +135,7 @@ async def delete_annotation(
     result = await db.execute(stmt)
     anno = result.scalar_one_or_none()
     if not anno:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
         
     await db.delete(anno)
     await db.commit()

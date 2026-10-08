@@ -1,9 +1,13 @@
 import 'dart:async';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../models/document_model.dart';
 import '../../../providers/document_provider.dart';
+import '../../../services/ocr/client_ocr_service.dart';
 
 class OcrDialog extends StatefulWidget {
   final DocumentModel document;
@@ -27,6 +31,11 @@ class _OcrDialogState extends State<OcrDialog> {
   String _pageScope = "current"; // "current" | "all" | "custom"
   late TextEditingController _customPagesController;
   
+  // Execution channel: 'client' (Direct) or 'server' (Backend Cloud)
+  // On Web, restricted to 'server' due to browser CORS
+  String _executionChannel = kIsWeb ? "server" : "client";
+  bool _isCancelled = false;
+
   // Baidu PaddleOCR-VL configuration
   late TextEditingController _apiTokenController;
   bool _useDocOrientationClassify = false;
@@ -57,6 +66,10 @@ class _OcrDialogState extends State<OcrDialog> {
     _customPagesController = TextEditingController(text: "${widget.currentPage}");
     _apiTokenController = TextEditingController(text: _defaultBaiduToken);
 
+    if (!kIsWeb) {
+      _loadPreferences();
+    }
+
     if (widget.document.ocrStatus == "processing") {
       _isProcessing = true;
       _progress = 0.1;
@@ -65,8 +78,37 @@ class _OcrDialogState extends State<OcrDialog> {
     }
   }
 
+  Future<void> _loadPreferences() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedChannel = prefs.getString('pref_ocr_channel');
+      if (savedChannel != null && !kIsWeb) {
+        if (mounted) setState(() => _executionChannel = savedChannel);
+      }
+      final savedToken = prefs.getString('pref_baidu_ocr_token');
+      if (savedToken != null && savedToken.trim().isNotEmpty) {
+        if (mounted) setState(() => _apiTokenController.text = savedToken.trim());
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveChannelPreference(String channel) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('pref_ocr_channel', channel);
+    } catch (_) {}
+  }
+
+  Future<void> _saveTokenPreference(String token) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('pref_baidu_ocr_token', token);
+    } catch (_) {}
+  }
+
   @override
   void dispose() {
+    _isCancelled = true;
     _pollTimer?.cancel();
     _customPagesController.dispose();
     _apiTokenController.dispose();
@@ -115,7 +157,136 @@ class _OcrDialogState extends State<OcrDialog> {
     return pages.toList()..sort();
   }
 
-  void _startOcr() async {
+  void _startOcr() {
+    if (!kIsWeb && _executionChannel == "client") {
+      _startClientOcr();
+    } else {
+      _startServerOcr();
+    }
+  }
+
+  Future<void> _startClientOcr() async {
+    final targets = _parseTargetPages();
+    final targetCount = targets?.length ?? widget.document.pageCount;
+
+    setState(() {
+      _isProcessing = true;
+      _progress = 0.05;
+      _totalTargetPages = targetCount;
+      _currentRecognizedPage = 0;
+      _statusMessage = "正在读取 PDF 文档数据...";
+      _errorMessage = null;
+    });
+
+    widget.onOcrStarted?.call();
+
+    try {
+      final docProvider = context.read<DocumentProvider>();
+      Uint8List? pdfBytes;
+
+      // 1. Try local cache first
+      final cachedBytes = await docProvider.docCacheService.getPdf(
+        widget.document.id,
+        expectedChecksum: widget.document.checksum,
+      );
+      if (cachedBytes != null && cachedBytes.isNotEmpty) {
+        pdfBytes = cachedBytes;
+      } else {
+        // 2. Fetch from server if not cached locally
+        if (mounted) {
+          setState(() => _statusMessage = "正在从服务器加载 PDF 文档...");
+        }
+        final fileUrl = '${docProvider.apiService.baseUrl}/api/documents/${widget.document.id}/file';
+        final res = await http.get(Uri.parse(fileUrl));
+        if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+          pdfBytes = res.bodyBytes;
+          await docProvider.docCacheService.savePdf(
+            widget.document.id,
+            pdfBytes,
+            checksum: widget.document.checksum,
+          );
+        }
+      }
+
+      if (pdfBytes == null || pdfBytes.isEmpty) {
+        throw Exception("未能获取 PDF 文档字节流，请检查网络或文档是否存在");
+      }
+
+      if (_isCancelled || !mounted) return;
+
+      // 3. Get existing markdown (if any) to preserve other pages
+      String? existingMd;
+      final cachedMd = await docProvider.docCacheService.getMarkdown(widget.document.id);
+      if (cachedMd != null && cachedMd.isNotEmpty) {
+        existingMd = cachedMd;
+      } else {
+        final serverMdRes = await docProvider.getMarkdown(widget.document.id);
+        if (serverMdRes['has_markdown'] == true) {
+          existingMd = serverMdRes['markdown'] as String?;
+        }
+      }
+
+      final token = _apiTokenController.text.trim().isNotEmpty
+          ? _apiTokenController.text.trim()
+          : _defaultBaiduToken;
+      _saveTokenPreference(token);
+
+      final clientOcr = ClientOcrService();
+      final mergedMarkdown = await clientOcr.executeClientOcr(
+        fullPdfBytes: pdfBytes,
+        totalDocPages: widget.document.pageCount,
+        targetPages: targets,
+        apiToken: token,
+        useDocOrientationClassify: _useDocOrientationClassify,
+        useDocUnwarping: _useDocUnwarping,
+        useChartRecognition: _useChartRecognition,
+        existingMarkdown: existingMd,
+        onProgress: (prog, msg, currP, totalP) {
+          if (!mounted || _isCancelled) return;
+          setState(() {
+            _progress = prog;
+            _statusMessage = msg;
+            _currentRecognizedPage = currP;
+            if (totalP > 0) _totalTargetPages = totalP;
+          });
+        },
+        isCancelled: () => _isCancelled || !mounted,
+      );
+
+      if (_isCancelled || !mounted) return;
+
+      setState(() {
+        _statusMessage = "正在同步 Markdown 结果至云端服务器...";
+        _progress = 0.98;
+      });
+
+      final syncSuccess = await docProvider.syncClientOcrResult(widget.document.id, mergedMarkdown);
+      if (!syncSuccess) {
+        throw Exception(docProvider.errorMessage ?? "同步 Markdown 至云端失败");
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _isProcessing = false;
+        _progress = 1.0;
+        _statusMessage = "客户端解析完成！Markdown 已同步至云端。";
+      });
+
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (mounted) {
+        widget.onOcrCompleted();
+        Navigator.of(context).pop();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isProcessing = false;
+        _errorMessage = e.toString().replaceFirst("Exception: ", "");
+      });
+    }
+  }
+
+  void _startServerOcr() async {
     final targets = _parseTargetPages();
     final targetCount = targets?.length ?? widget.document.pageCount;
 
@@ -131,9 +302,14 @@ class _OcrDialogState extends State<OcrDialog> {
     widget.onOcrStarted?.call();
 
     final docProvider = context.read<DocumentProvider>();
+    final token = _apiTokenController.text.trim().isNotEmpty
+        ? _apiTokenController.text.trim()
+        : _defaultBaiduToken;
+    _saveTokenPreference(token);
+
     final success = await docProvider.triggerOcr(
       widget.document.id,
-      apiToken: _apiTokenController.text.trim().isNotEmpty ? _apiTokenController.text.trim() : _defaultBaiduToken,
+      apiToken: token,
       pageScope: _pageScope,
       targetPages: targets,
       useDocOrientationClassify: _useDocOrientationClassify,
@@ -424,6 +600,44 @@ class _OcrDialogState extends State<OcrDialog> {
                           ),
                         ),
                         const SizedBox(height: 16),
+
+                        // Execution Channel Selection (Only on Native/Non-Web)
+                        if (!kIsWeb) ...[
+                          const Text(
+                            '解析执行方式',
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              ChoiceChip(
+                                label: const Text('客户端直接解析'),
+                                selected: _executionChannel == "client",
+                                avatar: const Icon(Icons.devices_rounded, size: 16),
+                                onSelected: (val) {
+                                  if (val) {
+                                    setState(() => _executionChannel = "client");
+                                    _saveChannelPreference("client");
+                                  }
+                                },
+                              ),
+                              ChoiceChip(
+                                label: const Text('服务器云端解析'),
+                                selected: _executionChannel == "server",
+                                avatar: const Icon(Icons.cloud_sync_rounded, size: 16),
+                                onSelected: (val) {
+                                  if (val) {
+                                    setState(() => _executionChannel = "server");
+                                    _saveChannelPreference("server");
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                        ],
 
                         // 2. Scope Selection (Full Doc, Current Page, Custom Range)
                         const Text(
@@ -720,9 +934,13 @@ class _OcrDialogState extends State<OcrDialog> {
                           ),
                           icon: const Icon(Icons.auto_awesome_rounded, size: 18),
                           label: Text(
-                            _pageScope == "current"
-                                ? '解析第 ${widget.currentPage} 页 (提取 Markdown)'
-                                : '开始 PaddleOCR-VL 全文解析',
+                            (!kIsWeb && _executionChannel == 'client')
+                                ? (_pageScope == "current"
+                                    ? '客户端解析第 ${widget.currentPage} 页'
+                                    : '开始客户端直接解析')
+                                : (_pageScope == "current"
+                                    ? '解析第 ${widget.currentPage} 页 (提取 Markdown)'
+                                    : '开始 PaddleOCR-VL 全文解析'),
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
                           onPressed: _startOcr,

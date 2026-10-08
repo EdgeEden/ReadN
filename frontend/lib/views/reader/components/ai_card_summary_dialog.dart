@@ -698,7 +698,7 @@ class _SummaryLatexBuilder extends MarkdownElementBuilder {
     if (text.isEmpty) return null;
     final isDisplay = element.attributes['display'] == 'true';
 
-    return InteractiveLatexView(
+    final latexView = InteractiveLatexView(
       rawLatex: text,
       isDisplay: isDisplay,
       textColor: textColor,
@@ -706,6 +706,22 @@ class _SummaryLatexBuilder extends MarkdownElementBuilder {
       codeBg: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
       isDark: isDark,
       pageNumber: 1,
+    );
+
+    if (isDisplay) {
+      return latexView;
+    }
+
+    return Text.rich(
+      TextSpan(
+        children: [
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            baseline: TextBaseline.alphabetic,
+            child: latexView,
+          ),
+        ],
+      ),
     );
   }
 }

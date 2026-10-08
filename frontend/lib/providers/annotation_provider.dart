@@ -197,7 +197,7 @@ class AnnotationProvider extends ChangeNotifier {
     final idx = _annotations.indexWhere((a) => a.id == annoId);
     if (idx == -1) return false;
 
-    final removed = _annotations.removeAt(idx);
+    _annotations.removeAt(idx);
     if (_selectedAnnotation?.id == annoId) {
       _selectedAnnotation = null;
     }
@@ -208,11 +208,9 @@ class AnnotationProvider extends ChangeNotifier {
       await apiService.deleteAnnotation(_currentDocId!, annoId);
       return true;
     } catch (e) {
-      debugPrint("Failed to delete annotation on cloud: $e");
-      // Revert if critical
-      _annotations.insert(idx, removed);
-      await annotationCacheService.saveAnnotations(_currentDocId!, _annotations);
-      notifyListeners();
+      debugPrint("Failed to delete annotation on cloud (kept deleted locally): $e");
+      // Do NOT revert local deletion: user intent is to delete the annotation.
+      // Reverting would lock the user into undeletable local records when offline/unstable.
       return false;
     }
   }

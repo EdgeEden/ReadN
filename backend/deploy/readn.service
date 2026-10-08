@@ -6,15 +6,16 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/readn/backend
-ExecStart=/opt/readn/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 18903 --workers 2 --proxy-headers
+ExecStart=/opt/readn/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers --timeout-keep-alive 75
 Restart=always
 RestartSec=5s
 Environment=PYTHONUNBUFFERED=1
 Environment=HOST=0.0.0.0
-Environment=PORT=18903
+Environment=PORT=8000
 
 # Security & Sandboxing (optional)
 PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
+

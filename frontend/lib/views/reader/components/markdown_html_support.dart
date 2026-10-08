@@ -107,6 +107,31 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
     }).join('\n');
   }
 
+  final cleanSelected = trimmed.replaceAll(
+    RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
+    '',
+  ).trim();
+
+  // If cleanSelected without newlines exists directly in content (visual soft-wrapping from SelectionArea),
+  // highlight it as one unified tag instead of fragmenting it
+  final singleLineAttempt = cleanSelected.replaceAll(RegExp(r'\r?\n|\r'), '');
+  if (singleLineAttempt.isNotEmpty &&
+      !singleLineAttempt.contains('#') &&
+      !singleLineAttempt.startsWith('-') &&
+      !singleLineAttempt.startsWith('>') &&
+      content.contains(singleLineAttempt)) {
+    return content.replaceFirst(singleLineAttempt, '$tagPrefix$singleLineAttempt==');
+  }
+
+  final singleLineSpaceAttempt = cleanSelected.replaceAll(RegExp(r'[\r\n\t]+'), ' ').trim();
+  if (singleLineSpaceAttempt.isNotEmpty &&
+      !singleLineSpaceAttempt.contains('#') &&
+      !singleLineSpaceAttempt.startsWith('-') &&
+      !singleLineSpaceAttempt.startsWith('>') &&
+      content.contains(singleLineSpaceAttempt)) {
+    return content.replaceFirst(singleLineSpaceAttempt, '$tagPrefix$singleLineSpaceAttempt==');
+  }
+
   // 1. Split selectedText by newline characters (\r\n, \r, \n) to handle multiline selections segment-by-segment
   final rawLines = trimmed
       .split(RegExp(r'\r?\n|\r'))

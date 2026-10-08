@@ -17,6 +17,7 @@ import 'package:frontend/providers/annotation_provider.dart';
 import 'package:frontend/views/reader/components/ai_config_dialog.dart';
 import 'package:frontend/views/reader/components/markdown_html_support.dart';
 import 'package:frontend/views/reader/components/markdown_reader_view.dart';
+import 'package:frontend/views/reader/components/latex_interactive_view.dart';
 import 'package:frontend/services/api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -901,6 +902,102 @@ End of page.
     expect(removedWithPrefixes, contains('点击顶部菜单栏的 文件 -> 导出 -> 点击 创建 PDF/XPS 文档。'));
     expect(removedWithPrefixes, contains('· 避免使用“虚拟打印为 PDF”：部分第三方打印机驱动会将整页渲染成位图。'));
     expect(removedWithPrefixes, contains('- 特殊艺术字体被降级：部分受版权限制或不规则的特殊艺术字可能在转换时被自动转为位图。'));
+  });
+
+  testWidgets('MarkdownReaderView renders inline LaTeX seamlessly without breaking text into separate wrap boxes', (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final storage = await StorageService.init();
+    final apiService = ApiService(storageService: storage);
+    final docCache = DocCacheService();
+    final annoCache = await AnnotationCacheService.init();
+    final docProvider = DocumentProvider(apiService: apiService, storageService: storage, docCacheService: docCache);
+    final annoProvider = AnnotationProvider(apiService: apiService, storageService: storage, annotationCacheService: annoCache);
+    final settingsProvider = ReaderSettingsProvider(storageService: storage);
+    final aiService = AiService();
+    final aiProvider = AiProvider(storageService: storage, aiService: aiService);
+
+    final doc = DocumentModel(
+      id: 'doc-latex-inline',
+      filename: 'sample.pdf',
+      title: 'Sample',
+      fileSize: 1000,
+      pageCount: 1,
+      hasTextLayer: true,
+      hasMarkdown: true,
+      ocrStatus: 'none',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+      annotationCount: 0,
+    );
+
+    const testMarkdown = '<!-- Page 1 -->\n\n国际网络 \$ ^{[23]} \$。1998年，全球有27 000 km的光纤链路。';
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider.value(value: docProvider),
+          ChangeNotifierProvider.value(value: annoProvider),
+          ChangeNotifierProvider.value(value: settingsProvider),
+          ChangeNotifierProvider.value(value: aiProvider),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: MarkdownReaderView(
+              document: doc,
+              markdownContent: testMarkdown,
+              onOpenOcr: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Verify InteractiveLatexView exists
+    expect(find.byType(InteractiveLatexView), findsOneWidget);
+
+    // Verify the paragraph Wrap has exactly 1 merged Text widget
+    final wrapFinder = find.byType(Wrap);
+    expect(wrapFinder, findsWidgets);
+    final wrap = tester.widget<Wrap>(wrapFinder.first);
+    expect(wrap.children.length, 1);
+  });
+
+  test('AnnotationProvider deleteAnnotation removes locally even when cloud sync fails', () async {
+    SharedPreferences.setMockInitialValues({});
+    final storage = await StorageService.init();
+    final apiService = ApiService(storageService: storage);
+    final annoCache = await AnnotationCacheService.init();
+    final annoProvider = AnnotationProvider(
+      apiService: apiService,
+      storageService: storage,
+      annotationCacheService: annoCache,
+    );
+
+    const docId = 'test-doc-offline-delete';
+    final anno = PdfAnnotation(
+      id: 'anno-offline-1',
+      docId: docId,
+      type: 'highlight',
+      pageNumber: 1,
+      colorHex: '#FDE047',
+      rects: const [],
+      selectedText: 'Test text',
+      noteContent: '',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    await annoCache.saveAnnotations(docId, [anno]);
+    await annoProvider.loadAnnotations(docId);
+    expect(annoProvider.annotations.length, 1);
+
+    // Attempt delete (apiService will fail since no real backend is running at default baseUrl)
+    final success = await annoProvider.deleteAnnotation('anno-offline-1');
+    expect(success, false); // Cloud returned false/error
+    // But local list MUST NOT revert the annotation!
+    expect(annoProvider.annotations.isEmpty, true);
+    expect(annoCache.getAnnotations(docId).isEmpty, true);
   });
 }
 

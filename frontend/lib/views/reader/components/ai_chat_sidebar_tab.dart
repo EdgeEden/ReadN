@@ -1079,7 +1079,7 @@ class _AiLatexBuilder extends MarkdownElementBuilder {
     final isDisplay = element.attributes['display'] == 'true';
 
     try {
-      return InteractiveLatexView(
+      final latexView = InteractiveLatexView(
         rawLatex: text,
         isDisplay: isDisplay,
         textColor: textColor,
@@ -1087,6 +1087,22 @@ class _AiLatexBuilder extends MarkdownElementBuilder {
         codeBg: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
         isDark: isDark,
         pageNumber: 1,
+      );
+
+      if (isDisplay) {
+        return latexView;
+      }
+
+      return Text.rich(
+        TextSpan(
+          children: [
+            WidgetSpan(
+              alignment: PlaceholderAlignment.middle,
+              baseline: TextBaseline.alphabetic,
+              child: latexView,
+            ),
+          ],
+        ),
       );
     } catch (_) {
       return Text(text, style: preferredStyle);

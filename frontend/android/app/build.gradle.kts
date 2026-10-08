@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.readn.app.frontend"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
