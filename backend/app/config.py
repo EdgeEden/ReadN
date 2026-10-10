@@ -27,4 +27,4 @@ CORS_ORIGINS = [
 ]
 
 
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.1.10"

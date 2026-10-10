@@ -809,7 +809,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }) {
     final bool mobile = isMobile ?? (containerSize.width < 700);
     final double menuWidth = mobile ? 248.0 : 380.0;
-    final double menuHeight = mobile ? 86.0 : 48.0;
+    final double menuHeight = mobile ? 78.0 : 48.0;
 
     double left = pointerPos.dx - (menuWidth / 2);
     if (left < 16) left = 16;

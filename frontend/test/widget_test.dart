@@ -1367,6 +1367,8 @@ End of page.
       expect(find.byType(Divider), findsOneWidget);
       expect(find.text('问AI'), findsOneWidget);
       expect(find.text('批注'), findsOneWidget);
+      expect(find.text('复制'), findsOneWidget);
+      expect(find.byIcon(Icons.close_rounded), findsNothing); // No "x" button on mobile!
 
       // 2. Desktop screen (1024x768)
       tester.view.physicalSize = const Size(1024, 768);
@@ -1391,8 +1393,9 @@ End of page.
       );
       await tester.pumpAndSettle();
 
-      // Desktop does not render Divider inside FloatingSelectionBar
+      // Desktop does not render Divider inside FloatingSelectionBar, but keeps close button
       expect(find.byType(Divider), findsNothing);
+      expect(find.byIcon(Icons.close_rounded), findsOneWidget);
     });
 
     testWidgets('ReaderSettingsProvider dynamic theme update test', (WidgetTester tester) async {

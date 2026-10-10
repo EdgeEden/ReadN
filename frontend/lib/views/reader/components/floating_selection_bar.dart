@@ -128,7 +128,7 @@ class FloatingSelectionBar extends StatelessWidget {
               icon: const Icon(Icons.auto_awesome_rounded, size: 14, color: Color(0xFF8B5CF6)),
               label: const Text('问AI', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF8B5CF6))),
             ),
-            SizedBox(width: compact ? 2 : 4),
+            SizedBox(width: compact ? 4 : 4),
           ],
           TextButton.icon(
             style: TextButton.styleFrom(
@@ -142,22 +142,37 @@ class FloatingSelectionBar extends StatelessWidget {
             icon: const Icon(Icons.edit_note_rounded, size: 16, color: Color(0xFF6366F1)),
             label: Text('批注', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: textColor)),
           ),
-          SizedBox(width: compact ? 1 : 4),
-          IconButton(
-            icon: Icon(Icons.copy_rounded, size: 15, color: iconColor),
-            padding: const EdgeInsets.all(4),
-            constraints: const BoxConstraints(),
-            tooltip: '复制',
-            onPressed: () => _copyToClipboard(context),
-          ),
-          SizedBox(width: compact ? 1 : 4),
-          IconButton(
-            icon: Icon(Icons.close_rounded, size: 15, color: iconColor.withValues(alpha: 0.6)),
-            padding: const EdgeInsets.all(4),
-            constraints: const BoxConstraints(),
-            tooltip: '关闭',
-            onPressed: onDismiss,
-          ),
+          SizedBox(width: compact ? 4 : 4),
+          if (compact)
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                foregroundColor: textColor,
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              onPressed: () => _copyToClipboard(context),
+              icon: Icon(Icons.copy_rounded, size: 14, color: iconColor),
+              label: Text('复制', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: textColor)),
+            )
+          else ...[
+            IconButton(
+              icon: Icon(Icons.copy_rounded, size: 16, color: iconColor),
+              padding: const EdgeInsets.all(5),
+              constraints: const BoxConstraints(),
+              tooltip: '复制',
+              onPressed: () => _copyToClipboard(context),
+            ),
+            const SizedBox(width: 4),
+            IconButton(
+              icon: Icon(Icons.close_rounded, size: 16, color: iconColor.withValues(alpha: 0.6)),
+              padding: const EdgeInsets.all(5),
+              constraints: const BoxConstraints(),
+              tooltip: '关闭',
+              onPressed: onDismiss,
+            ),
+          ],
         ],
       );
     }
@@ -167,7 +182,7 @@ class FloatingSelectionBar extends StatelessWidget {
         color: Colors.transparent,
         child: Container(
           width: 248,
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
           decoration: BoxDecoration(
             color: barBg,
             borderRadius: BorderRadius.circular(16),
@@ -183,12 +198,15 @@ class FloatingSelectionBar extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              buildColorBubbles(),
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3),
-                child: Divider(height: 1, thickness: 1, color: dividerColor),
+              SizedBox(
+                height: 34,
+                child: Center(child: buildColorBubbles()),
               ),
-              buildActionButtons(compact: true),
+              Divider(height: 1, thickness: 0.8, color: dividerColor),
+              SizedBox(
+                height: 34,
+                child: Center(child: buildActionButtons(compact: true)),
+              ),
             ],
           ),
         ),

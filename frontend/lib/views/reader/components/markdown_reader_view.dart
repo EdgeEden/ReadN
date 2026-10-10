@@ -208,7 +208,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
   }) {
     final bool mobile = isMobile ?? (containerSize.width < 700);
     final double menuWidth = mobile ? 248.0 : 380.0;
-    final double menuHeight = mobile ? 86.0 : 48.0;
+    final double menuHeight = mobile ? 78.0 : 48.0;
 
     double left = pointerPos.dx - (menuWidth / 2);
     if (left < 16) left = 16;
@@ -1034,43 +1034,9 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     SelectableRegionState selectableRegionState,
     int pageNumber,
   ) {
-    // ignore: deprecated_member_use
-    final value = selectableRegionState.textEditingValue;
-    final text = value.text;
-    final start = value.selection.start.clamp(0, text.length);
-    final end = value.selection.end.clamp(0, text.length);
-    final selectedText = (start < end) ? text.substring(start, end) : '';
-
-    if (selectedText.trim().isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    final isMobile = MediaQuery.of(context).size.width < 700;
-    return AdaptiveTextSelectionToolbar(
-      anchors: selectableRegionState.contextMenuAnchors,
-      children: [
-        FloatingSelectionBar(
-          selectedText: selectedText,
-          readingMode: context.read<ReaderSettingsProvider>().readingMode,
-          isMobile: isMobile,
-          onHighlight: (colorHex) {
-            _createHighlightFromSelection(selectedText, colorHex, pageNumber);
-            selectableRegionState.hideToolbar();
-          },
-          onAddNote: () {
-            selectableRegionState.hideToolbar();
-            _showNoteDialogForSelection(selectedText, pageNumber);
-          },
-          onAskAi: () {
-            selectableRegionState.hideToolbar();
-            widget.onAskAi?.call(selectedText, pageNumber);
-          },
-          onDismiss: () {
-            selectableRegionState.hideToolbar();
-          },
-        ),
-      ],
-    );
+    // Suppress native selection context menu to prevent duplicate floating bars;
+    // Selection floating bar is unified and managed exclusively by Stack's _activeSelection.
+    return const SizedBox.shrink();
   }
 
   @override
