@@ -588,15 +588,18 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
 
     // 1. Update chunks by applying segmented line-by-line highlight
     bool anyChunkModified = false;
+    String? matchedMarkdownText;
+
     int chunkIdx = _chunks.indexWhere((c) => c.pageNumber == pageNumber);
     if (chunkIdx != -1) {
       final oldChunk = _chunks[chunkIdx];
-      final newContent = applyHighlightToMarkdown(oldChunk.content, selectedText, colorHex);
-      if (newContent != oldChunk.content) {
+      final res = applyHighlightToMarkdownWithResult(oldChunk.content, selectedText, colorHex);
+      if (res.isModified) {
         _chunks[chunkIdx] = MarkdownPageChunk(
           pageNumber: oldChunk.pageNumber,
-          content: newContent,
+          content: res.content,
         );
+        matchedMarkdownText = res.matchedText;
         anyChunkModified = true;
       }
     }
@@ -605,12 +608,13 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     if (!anyChunkModified) {
       for (int i = 0; i < _chunks.length; i++) {
         final chunk = _chunks[i];
-        final newContent = applyHighlightToMarkdown(chunk.content, selectedText, colorHex);
-        if (newContent != chunk.content) {
+        final res = applyHighlightToMarkdownWithResult(chunk.content, selectedText, colorHex);
+        if (res.isModified) {
           _chunks[i] = MarkdownPageChunk(
             pageNumber: chunk.pageNumber,
-            content: newContent,
+            content: res.content,
           );
+          matchedMarkdownText ??= res.matchedText;
           anyChunkModified = true;
         }
       }
@@ -636,7 +640,9 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
       pageNumber: pageNumber,
       colorHex: colorHex,
       rects: const [],
-      selectedText: trimmedText,
+      selectedText: (matchedMarkdownText != null && matchedMarkdownText.trim().isNotEmpty)
+          ? matchedMarkdownText.trim()
+          : trimmedText,
       noteContent: "",
       createdAt: DateTime.now(),
       updatedAt: DateTime.now(),
@@ -930,9 +936,14 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
 
     // Also remove the corresponding PdfAnnotation from annoProvider
     final formulaText = isDisplay ? '\$\$$trimmedLatex\$\$' : '\$$trimmedLatex\$';
-    final matchingAnno = annoProvider.annotations.cast<PdfAnnotation?>().firstWhere(
+    var matchingAnno = annoProvider.annotations.cast<PdfAnnotation?>().firstWhere(
       (a) => a?.docId == widget.document.id &&
              (a?.selectedText.trim() == formulaText || a?.selectedText.trim() == trimmedLatex),
+      orElse: () => null,
+    );
+    matchingAnno ??= annoProvider.annotations.cast<PdfAnnotation?>().firstWhere(
+      (a) => a?.docId == widget.document.id &&
+             (a?.selectedText.contains(formulaText) == true || a?.selectedText.contains(trimmedLatex) == true),
       orElse: () => null,
     );
     if (matchingAnno != null) {
@@ -948,8 +959,18 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     if (chunkIdx != -1) {
       final oldChunk = _chunks[chunkIdx];
       String content = oldChunk.content;
-      final escaped = RegExp.escape(trimmedLatex);
+      bool modified = false;
 
+      // If matchingAnno was part of a compound selection, clean up all segments from markdown
+      if (matchingAnno != null && matchingAnno.selectedText.trim().isNotEmpty) {
+        final compoundClean = removeHighlightFromMarkdown(content, matchingAnno.selectedText);
+        if (compoundClean != content) {
+          content = compoundClean;
+          modified = true;
+        }
+      }
+
+      final escaped = RegExp.escape(trimmedLatex);
       final highlightedRegex = RegExp(
         r'==(?:\[#[0-9a-fA-F]{3,8}\])?\s*(\$\$|\$|\\\[|\\\(|```(?:latex|math|tex)\s*\n?)\s*' +
             escaped +
@@ -962,7 +983,10 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
           final closeDelim = m.group(2) ?? (isDisplay ? r'$$' : r'$');
           return '$openDelim$trimmedLatex$closeDelim';
         });
+        modified = true;
+      }
 
+      if (modified) {
         _chunks[chunkIdx] = MarkdownPageChunk(
           pageNumber: oldChunk.pageNumber,
           content: content,

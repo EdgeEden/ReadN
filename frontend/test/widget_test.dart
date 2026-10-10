@@ -999,6 +999,79 @@ End of page.
     expect(annoProvider.annotations.isEmpty, true);
     expect(annoCache.getAnnotations(docId).isEmpty, true);
   });
+
+  group('LaTeX Inline Math Highlighting & Clean Removal Tests', () {
+    const rawMathDoc = '''
+选择离散电平的数值使满足 \$M > A_{max} / A_{N}\$ ，则可以使量化噪声的影响最小化，这里 \$A_{N}\$ 是模拟信号的均方根噪声振幅。比率 \$A_{max} / A_{N}\$ 称为动态范围 (dynamic range)。
+''';
+
+    test('Highlights text and inline formula into segmented highlights preserving math syntax', () {
+      const selection = '使满足 \$M > A_{max} / A_{N}\$ ，则可以使量化噪声';
+      final result = applyHighlightToMarkdownWithResult(rawMathDoc, selection, '#FDE047');
+
+      expect(result.isModified, isTrue);
+      expect(result.content, contains('==使满足=='));
+      expect(result.content, contains('==\$M > A_{max} / A_{N}\$=='));
+      expect(result.content, contains('==，则可以使量化噪声=='));
+      // Ensure formula itself is not lumped inside a text block
+      expect(result.content, isNot(contains('==使满足 \$M')));
+
+      // Test clean unhighlighting
+      final clean = removeHighlightFromMarkdown(result.content, selection);
+      expect(clean, isNot(contains('==')));
+      expect(clean, contains('使满足 \$M > A_{max} / A_{N}\$ ，则可以使量化噪声'));
+    });
+
+    test('Handles SelectionArea extracted text with \\uFFFC widget placeholder', () {
+      // Simulates Flutter's SelectableRegion extracting \uFFFC for WidgetSpan
+      const selectionWithPlaceholder = '使满足 \uFFFC ，则可以使量化噪声';
+      final result = applyHighlightToMarkdownWithResult(rawMathDoc, selectionWithPlaceholder, '#86EFAC');
+
+      expect(result.isModified, isTrue);
+      expect(result.content, contains('==[#86EFAC]使满足=='));
+      expect(result.content, contains('==[#86EFAC]\$M > A_{max} / A_{N}\$=='));
+      expect(result.content, contains('==[#86EFAC]，则可以使量化噪声=='));
+
+      // Test clean unhighlighting with original matchedText
+      final clean = removeHighlightFromMarkdown(result.content, result.matchedText!);
+      expect(clean, isNot(contains('==')));
+      expect(clean, contains('\$M > A_{max} / A_{N}\$'));
+    });
+
+    test('Handles SelectionArea extracted visual text with stripped \$ delimiters', () {
+      // Simulates browser/desktop selecting rendered math text without $
+      const selectionVisual = '使满足 M > A max / A N ，则可以使量化噪声';
+      final result = applyHighlightToMarkdownWithResult(rawMathDoc, selectionVisual, '#93C5FD');
+
+      expect(result.isModified, isTrue);
+      expect(result.content, contains('==[#93C5FD]使满足=='));
+      expect(result.content, contains('==[#93C5FD]\$M > A_{max} / A_{N}\$=='));
+      expect(result.content, contains('==[#93C5FD]，则可以使量化噪声=='));
+
+      // Test clean unhighlighting
+      final clean = removeHighlightFromMarkdown(result.content, result.matchedText!);
+      expect(clean, isNot(contains('==')));
+      expect(clean, contains('\$M > A_{max} / A_{N}\$'));
+    });
+
+    test('Handles selection containing multiple inline formulas', () {
+      const multiFormulaSel = '使满足 \$M > A_{max} / A_{N}\$ ，则可以使量化噪声的影响最小化，这里 \$A_{N}\$ 是模拟信号';
+      final result = applyHighlightToMarkdownWithResult(rawMathDoc, multiFormulaSel, '#FDE047');
+
+      expect(result.isModified, isTrue);
+      expect(result.content, contains('==使满足=='));
+      expect(result.content, contains('==\$M > A_{max} / A_{N}\$=='));
+      expect(result.content, contains('==，则可以使量化噪声的影响最小化，这里=='));
+      expect(result.content, contains('==\$A_{N}\$=='));
+      expect(result.content, contains('==是模拟信号=='));
+
+      // Clean removal of multi-formula highlight
+      final clean = removeHighlightFromMarkdown(result.content, multiFormulaSel);
+      expect(clean, isNot(contains('==')));
+      expect(clean, contains('\$M > A_{max} / A_{N}\$'));
+      expect(clean, contains('\$A_{N}\$'));
+    });
+  });
 }
 
 

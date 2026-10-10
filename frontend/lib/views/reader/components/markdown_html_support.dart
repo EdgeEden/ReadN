@@ -78,11 +78,235 @@ Color? parseHtmlColor(String? colorStr) {
   return null;
 }
 
-/// Robustly applies Markdown fluorescent highlight (`==text==` or `==[#HEX]text==`) to markdown content,
-/// correctly preserving line prefixes (Headings `#`, list markers `-`/`*`/`·`/`•`/`1.`/`1、`/`（1）`, blockquotes `>`) and
-/// properly handling multiline selections without corrupting Markdown block syntax.
-String applyHighlightToMarkdown(String content, String selectedText, String colorHex) {
-  if (content.isEmpty || selectedText.trim().isEmpty) return content;
+/// Data result class for applying Markdown highlights.
+class MarkdownHighlightApplyResult {
+  final String content;
+  final String? matchedText;
+  final bool isModified;
+
+  const MarkdownHighlightApplyResult({
+    required this.content,
+    this.matchedText,
+    required this.isModified,
+  });
+}
+
+/// Splits markdown text by inline/display LaTeX formulas (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`)
+/// and wraps text segments with `==[#HEX]text==` and formulas with `==[#HEX]$formula$==` individually.
+String segmentAndHighlightMath(String slice, String tagPrefix) {
+  if (slice.isEmpty) return slice;
+
+  final formulaRegex = RegExp(
+    r'(?<!\\)\$(?!\$)((?:\\.|[^\$])+?)(?<!\\)\$|(?<!\\)\$\$((?:\\.|[\s\S])+?)(?<!\\)\$\$|\\\(.*?\\\)|\\\[.*?\\\]',
+  );
+
+  final matches = formulaRegex.allMatches(slice).toList();
+  if (matches.isEmpty) {
+    return _wrapSegmentWithPrefix(slice, tagPrefix);
+  }
+
+  final buffer = StringBuffer();
+  int lastEnd = 0;
+
+  for (final match in matches) {
+    if (match.start > lastEnd) {
+      final textSegment = slice.substring(lastEnd, match.start);
+      buffer.write(_wrapSegmentWithPrefix(textSegment, tagPrefix));
+    }
+
+    final formula = match.group(0)!;
+    final cleanFormula = formula.replaceAll(
+      RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
+      '',
+    ).trim();
+
+    if (cleanFormula.isNotEmpty) {
+      buffer.write('$tagPrefix$cleanFormula==');
+    }
+    lastEnd = match.end;
+  }
+
+  if (lastEnd < slice.length) {
+    final textSegment = slice.substring(lastEnd);
+    buffer.write(_wrapSegmentWithPrefix(textSegment, tagPrefix));
+  }
+
+  return buffer.toString();
+}
+
+/// Helper to wrap text safely without crossing any newlines or nesting tags
+String _wrapSegmentWithPrefix(String text, String tagPrefix) {
+  if (text.isEmpty) return text;
+  if (!text.contains('\n')) {
+    final leadingMatch = RegExp(r'^\s*').firstMatch(text)?.group(0) ?? '';
+    final trailingMatch = RegExp(r'\s*$').firstMatch(text)?.group(0) ?? '';
+    final core = text.substring(leadingMatch.length, text.length - trailingMatch.length);
+    if (core.isEmpty) return text;
+    final cleanCore = core.replaceAll(
+      RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
+      '',
+    );
+    if (cleanCore.isEmpty) return text;
+    return '$leadingMatch$tagPrefix$cleanCore==$trailingMatch';
+  }
+  return text.split('\n').map((line) {
+    final lineTrimmed = line.trim();
+    if (lineTrimmed.isEmpty) return line;
+    final leadingMatch = RegExp(r'^\s*').firstMatch(line)?.group(0) ?? '';
+    final trailingMatch = RegExp(r'\s*$').firstMatch(line)?.group(0) ?? '';
+    final core = line.substring(leadingMatch.length, line.length - trailingMatch.length);
+    if (core.isEmpty) return line;
+    final cleanCore = core.replaceAll(
+      RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
+      '',
+    );
+    if (cleanCore.isEmpty) return line;
+    return '$leadingMatch$tagPrefix$cleanCore==$trailingMatch';
+  }).join('\n');
+}
+
+/// Tries formula-tolerant anchor & wildcard matching across LaTeX formulas
+MarkdownHighlightApplyResult? _tryFormulaTolerantMatch(
+  String content,
+  String selectedText,
+  String tagPrefix,
+) {
+  if (selectedText.isEmpty || content.isEmpty) return null;
+
+  const formulaPattern = r'(?:\$(?!\$)(?:\\.|[^\$])+?\$|\$\$(?:\\.|[\s\S])+?\$\$|\\\(.*?\\\)|\\\[.*?\\\])';
+
+  // Case A: selectedText explicitly contains '\uFFFC' (Object Replacement Character from WidgetSpan)
+  if (selectedText.contains('\uFFFC')) {
+    final parts = selectedText.split('\uFFFC');
+    final regexParts = <String>[];
+    for (final part in parts) {
+      final partTrimmed = part.trim();
+      if (partTrimmed.isNotEmpty) {
+        final tokens = partTrimmed.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).map(RegExp.escape);
+        regexParts.add(tokens.join(r'\s*'));
+      }
+    }
+    if (regexParts.isNotEmpty) {
+      final pattern = regexParts.join(r'\s*' + formulaPattern + r'\s*');
+      final reg = RegExp(pattern);
+      final match = reg.firstMatch(content);
+      if (match != null) {
+        final matchedSpan = match.group(0)!;
+        final segmented = segmentAndHighlightMath(matchedSpan, tagPrefix);
+        return MarkdownHighlightApplyResult(
+          content: content.replaceFirst(matchedSpan, segmented),
+          matchedText: matchedSpan,
+          isModified: true,
+        );
+      }
+    }
+  }
+
+  // Case B: Space-separated token anchors across math
+  final rawTokens = selectedText
+      .split(RegExp(r'[\s\r\n\t]+'))
+      .where((t) => t.isNotEmpty && t != '\uFFFC')
+      .toList();
+
+  if (rawTokens.length >= 2) {
+    final headCandidate = rawTokens.first;
+    final tailCandidate = rawTokens.last;
+
+    int searchStart = 0;
+    while (searchStart < content.length) {
+      final headIdx = content.indexOf(headCandidate, searchStart);
+      if (headIdx == -1) break;
+
+      final tailIdx = content.indexOf(tailCandidate, headIdx + headCandidate.length);
+      if (tailIdx != -1 && (tailIdx - headIdx) <= (selectedText.length * 3 + 200)) {
+        final spanEnd = tailIdx + tailCandidate.length;
+
+        int actualStart = headIdx;
+        int actualEnd = spanEnd;
+
+        final beforeContent = content.substring(0, headIdx);
+        final fBefore = RegExp(r'(\$(?!\$)(?:\\.|[^\$])+?\$|\$\$(?:\\.|[\s\S])+?\$\$)\s*$').firstMatch(beforeContent);
+        if (fBefore != null && selectedText.indexOf(headCandidate) > 0) {
+          actualStart = fBefore.start;
+        }
+
+        final afterContent = content.substring(spanEnd);
+        final fAfter = RegExp(r'^\s*(\$(?!\$)(?:\\.|[^\$])+?\$|\$\$(?:\\.|[\s\S])+?\$\$)').firstMatch(afterContent);
+        if (fAfter != null && (selectedText.lastIndexOf(tailCandidate) + tailCandidate.length < selectedText.length)) {
+          actualEnd = spanEnd + fAfter.end;
+        }
+
+        final candidateSpan = content.substring(actualStart, actualEnd);
+        if (candidateSpan.contains(r'$') || candidateSpan.contains(r'\(') || candidateSpan.contains(r'\[')) {
+          final segmented = segmentAndHighlightMath(candidateSpan, tagPrefix);
+          return MarkdownHighlightApplyResult(
+            content: content.replaceFirst(candidateSpan, segmented),
+            matchedText: candidateSpan,
+            isModified: true,
+          );
+        }
+      }
+      searchStart = headIdx + 1;
+    }
+  }
+
+  // Case C: CJK substring anchors (handles Chinese text without spaces)
+  final cjkOnly = selectedText.replaceAll(RegExp(r'[^\u4e00-\u9fa5]'), '');
+  if (cjkOnly.length >= 4) {
+    final anchorLen = (cjkOnly.length >= 6) ? 3 : 2;
+    final head = cjkOnly.substring(0, anchorLen);
+    final tail = cjkOnly.substring(cjkOnly.length - anchorLen);
+
+    int searchStart = 0;
+    while (searchStart < content.length) {
+      final headIdx = content.indexOf(head, searchStart);
+      if (headIdx == -1) break;
+
+      final tailIdx = content.indexOf(tail, headIdx + head.length);
+      if (tailIdx != -1 && (tailIdx - headIdx) <= (selectedText.length * 3 + 200)) {
+        final spanEnd = tailIdx + tail.length;
+
+        int actualStart = headIdx;
+        int actualEnd = spanEnd;
+
+        final beforeContent = content.substring(0, headIdx);
+        final fBefore = RegExp(r'(\$(?!\$)(?:\\.|[^\$])+?\$|\$\$(?:\\.|[\s\S])+?\$\$)\s*$').firstMatch(beforeContent);
+        if (fBefore != null && selectedText.indexOf(head) > 0) {
+          actualStart = fBefore.start;
+        }
+
+        final afterContent = content.substring(spanEnd);
+        final fAfter = RegExp(r'^\s*(\$(?!\$)(?:\\.|[^\$])+?\$|\$\$(?:\\.|[\s\S])+?\$\$)').firstMatch(afterContent);
+        if (fAfter != null && (selectedText.lastIndexOf(tail) + tail.length < selectedText.length)) {
+          actualEnd = spanEnd + fAfter.end;
+        }
+
+        final candidateSpan = content.substring(actualStart, actualEnd);
+        if (candidateSpan.contains(r'$') || candidateSpan.contains(r'\(') || candidateSpan.contains(r'\[')) {
+          final segmented = segmentAndHighlightMath(candidateSpan, tagPrefix);
+          return MarkdownHighlightApplyResult(
+            content: content.replaceFirst(candidateSpan, segmented),
+            matchedText: candidateSpan,
+            isModified: true,
+          );
+        }
+      }
+      searchStart = headIdx + 1;
+    }
+  }
+
+  return null;
+}
+
+/// Applies Markdown fluorescent highlight (`==text==` or `==[#HEX]text==`), returning a detailed result.
+MarkdownHighlightApplyResult applyHighlightToMarkdownWithResult(
+  String content,
+  String selectedText,
+  String colorHex,
+) {
+  if (content.isEmpty || selectedText.trim().isEmpty) {
+    return MarkdownHighlightApplyResult(content: content, isModified: false);
+  }
 
   final trimmed = selectedText.trim();
   final normalizedHex = colorHex.toUpperCase();
@@ -90,71 +314,78 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
       ? '=='
       : '==[$normalizedHex]';
 
-  // Helper to wrap text safely without crossing any newlines
-  String wrapSegment(String text) {
-    if (text.isEmpty) return text;
-    if (!text.contains('\n')) {
-      return '$tagPrefix$text==';
-    }
-    return text.split('\n').map((line) {
-      final lineTrimmed = line.trim();
-      if (lineTrimmed.isEmpty) return line;
-      final leadingMatch = RegExp(r'^\s*').firstMatch(line)?.group(0) ?? '';
-      final trailingMatch = RegExp(r'\s*$').firstMatch(line)?.group(0) ?? '';
-      final core = line.substring(leadingMatch.length, line.length - trailingMatch.length);
-      if (core.isEmpty) return line;
-      return '$leadingMatch$tagPrefix$core==$trailingMatch';
-    }).join('\n');
-  }
-
   final cleanSelected = trimmed.replaceAll(
     RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
     '',
   ).trim();
 
-  // If cleanSelected without newlines exists directly in content (visual soft-wrapping from SelectionArea),
-  // highlight it as one unified tag instead of fragmenting it
+  // 1. Direct exact containment
+  if (cleanSelected.isNotEmpty && content.contains(cleanSelected)) {
+    final segmented = segmentAndHighlightMath(cleanSelected, tagPrefix);
+    return MarkdownHighlightApplyResult(
+      content: content.replaceFirst(cleanSelected, segmented),
+      matchedText: cleanSelected,
+      isModified: true,
+    );
+  }
+
+  // 2. Single-line newline-free attempt
   final singleLineAttempt = cleanSelected.replaceAll(RegExp(r'\r?\n|\r'), '');
   if (singleLineAttempt.isNotEmpty &&
       !singleLineAttempt.contains('#') &&
       !singleLineAttempt.startsWith('-') &&
       !singleLineAttempt.startsWith('>') &&
       content.contains(singleLineAttempt)) {
-    return content.replaceFirst(singleLineAttempt, '$tagPrefix$singleLineAttempt==');
+    final segmented = segmentAndHighlightMath(singleLineAttempt, tagPrefix);
+    return MarkdownHighlightApplyResult(
+      content: content.replaceFirst(singleLineAttempt, segmented),
+      matchedText: singleLineAttempt,
+      isModified: true,
+    );
   }
 
+  // 3. Single-line space-normalized attempt
   final singleLineSpaceAttempt = cleanSelected.replaceAll(RegExp(r'[\r\n\t]+'), ' ').trim();
   if (singleLineSpaceAttempt.isNotEmpty &&
       !singleLineSpaceAttempt.contains('#') &&
       !singleLineSpaceAttempt.startsWith('-') &&
       !singleLineSpaceAttempt.startsWith('>') &&
       content.contains(singleLineSpaceAttempt)) {
-    return content.replaceFirst(singleLineSpaceAttempt, '$tagPrefix$singleLineSpaceAttempt==');
+    final segmented = segmentAndHighlightMath(singleLineSpaceAttempt, tagPrefix);
+    return MarkdownHighlightApplyResult(
+      content: content.replaceFirst(singleLineSpaceAttempt, segmented),
+      matchedText: singleLineSpaceAttempt,
+      isModified: true,
+    );
   }
 
-  // 1. Split selectedText by newline characters (\r\n, \r, \n) to handle multiline selections segment-by-segment
+  // 4. Formula-tolerant anchor & wildcard matching (crucial for SelectionArea with math)
+  final formulaToleranceResult = _tryFormulaTolerantMatch(content, cleanSelected, tagPrefix);
+  if (formulaToleranceResult != null) {
+    return formulaToleranceResult;
+  }
+
+  // 5. Multiline selections segment-by-segment fallback
   final rawLines = trimmed
       .split(RegExp(r'\r?\n|\r'))
       .map((l) => l.trim())
       .where((l) => l.isNotEmpty && !l.startsWith('<!--') && !l.startsWith('-->'))
       .toList();
 
-  if (rawLines.isEmpty) return content;
+  if (rawLines.isEmpty) {
+    return MarkdownHighlightApplyResult(content: content, isModified: false);
+  }
 
   var updatedContent = content;
+  bool anyModified = false;
+  String? firstMatchedText;
 
   for (final rawLine in rawLines) {
-    // Strip existing highlight syntax from the raw line if present in selection
     final line = rawLine.replaceAll(
       RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
       '',
     ).trim();
     if (line.isEmpty) continue;
-
-    final lineReplacement = '$tagPrefix$line==';
-    if (updatedContent.contains(lineReplacement)) {
-      continue; // Already highlighted with current tag
-    }
 
     // A. Check if the line is an entire heading line: e.g. "## Heading"
     final headingLineRegex = RegExp(
@@ -166,6 +397,8 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
         headingLineRegex,
         (m) => '${m.group(1)}$tagPrefix$line==${m.group(2)}',
       );
+      anyModified = true;
+      firstMatchedText ??= line;
       continue;
     }
 
@@ -179,10 +412,12 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
         insideHeadingRegex,
         (m) => '${m.group(1)}$tagPrefix$line==${m.group(2)}',
       );
+      anyModified = true;
+      firstMatchedText ??= line;
       continue;
     }
 
-    // C. Check if list item or blockquote: e.g. "- Item" / "· Item" / "• Item" / "1. Item" / "1、Item" / "（1）Item" / "> Quote"
+    // C. Check if list item or blockquote: e.g. "- Item" / "· Item" / "• Item" / "1. Item"
     final listOrQuoteRegex = RegExp(
       r'^([ \t]*(?:[-*+•·]|\d+[\.、]|[（(]\d+[）)]|>)[ \t]*)' + RegExp.escape(line) + r'([ \t]*)$',
       multiLine: true,
@@ -192,16 +427,21 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
         listOrQuoteRegex,
         (m) => '${m.group(1)}$tagPrefix$line==${m.group(2)}',
       );
+      anyModified = true;
+      firstMatchedText ??= line;
       continue;
     }
 
     // D. Direct exact substring containment
     if (updatedContent.contains(line)) {
-      updatedContent = updatedContent.replaceFirst(line, lineReplacement);
+      final segmented = segmentAndHighlightMath(line, tagPrefix);
+      updatedContent = updatedContent.replaceFirst(line, segmented);
+      anyModified = true;
+      firstMatchedText ??= line;
       continue;
     }
 
-    // E. Matching with flexible whitespace and/or existing embedded highlight tags (supports both spaced words and CJK character sequences)
+    // E. Matching with flexible whitespace and/or existing embedded highlight tags
     final tagOrSpace = r'(?:\s+|==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>)*';
     bool matched = false;
 
@@ -216,8 +456,11 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
           RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
           '',
         );
-        updatedContent = updatedContent.replaceFirst(matchedSpan, wrapSegment(cleanMatchedText));
+        final segmented = segmentAndHighlightMath(cleanMatchedText, tagPrefix);
+        updatedContent = updatedContent.replaceFirst(matchedSpan, segmented);
         matched = true;
+        anyModified = true;
+        firstMatchedText ??= cleanMatchedText;
       }
     }
 
@@ -233,13 +476,26 @@ String applyHighlightToMarkdown(String content, String selectedText, String colo
             RegExp(r'==(?:\[#[0-9a-fA-F]{3,8}\])?|==|<mark(?:\s+[^>]*)?>|</mark>'),
             '',
           );
-          updatedContent = updatedContent.replaceFirst(matchedSpan, wrapSegment(cleanMatchedText));
+          final segmented = segmentAndHighlightMath(cleanMatchedText, tagPrefix);
+          updatedContent = updatedContent.replaceFirst(matchedSpan, segmented);
+          anyModified = true;
+          firstMatchedText ??= cleanMatchedText;
         }
       }
     }
   }
 
-  return updatedContent;
+  return MarkdownHighlightApplyResult(
+    content: updatedContent,
+    matchedText: firstMatchedText,
+    isModified: anyModified,
+  );
+}
+
+/// Robustly applies Markdown fluorescent highlight (`==text==` or `==[#HEX]text==`) to markdown content,
+/// correctly preserving line prefixes and formulas.
+String applyHighlightToMarkdown(String content, String selectedText, String colorHex) {
+  return applyHighlightToMarkdownWithResult(content, selectedText, colorHex).content;
 }
 
 /// Robustly removes highlights (`==...==` or `<mark>...</mark>`) from markdown content
@@ -256,7 +512,7 @@ String removeHighlightFromMarkdown(String markdown, String targetText) {
   String normalize(String s) {
     return s
         .replaceAll(RegExp(r'[\s\r\n\t]+'), '')
-        .replaceAll(RegExp(r'^(\$\$|\$|\\\[|\\\()|(\$\$|\$|\\\]|\\\))$'), '')
+        .replaceAll(RegExp(r'\$\$|\$|\\\[|\\\]|\\\(|\\\)'), '')
         .toLowerCase();
   }
 
@@ -285,7 +541,8 @@ String removeHighlightFromMarkdown(String markdown, String targetText) {
     if (insideNorm.isEmpty) return rawInside;
 
     // Check if insideNorm is part of cleanNorm or any cleanLines
-    if (cleanNorm.contains(insideNorm) ||
+    if ((insideNorm.length >= 2 && cleanNorm.contains(insideNorm)) ||
+        (insideNorm.length == 1 && (rawInside.contains(r'$') || cleanText.contains(rawInside))) ||
         cleanLines.any((line) => line == insideNorm || (insideNorm.length >= 2 && line.contains(insideNorm)))) {
       return rawInside;
     }
@@ -310,7 +567,8 @@ String removeHighlightFromMarkdown(String markdown, String targetText) {
     final insideNorm = normalize(rawInside);
     if (insideNorm.isEmpty) return rawInside;
 
-    if (cleanNorm.contains(insideNorm) ||
+    if ((insideNorm.length >= 2 && cleanNorm.contains(insideNorm)) ||
+        (insideNorm.length == 1 && (rawInside.contains(r'$') || cleanText.contains(rawInside))) ||
         cleanLines.any((line) => line == insideNorm || (insideNorm.length >= 2 && line.contains(insideNorm)))) {
       return rawInside;
     }
