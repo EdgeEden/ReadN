@@ -2,7 +2,9 @@ import asyncio
 import hashlib
 import os
 import re
+import shutil
 import uuid
+from pathlib import Path
 from typing import List
 import aiofiles
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
@@ -199,10 +201,65 @@ async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
                 os.remove(p)
             except OSError:
                 pass
+
+    # Remove document images directory if exists
+    img_dir = STORAGE_DIR / f"{doc.id}_images"
+    if img_dir.exists():
+        try:
+            shutil.rmtree(img_dir)
+        except OSError:
+            pass
             
     await db.delete(doc)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.api_route("/{doc_id}/images/{image_name:path}", methods=["GET", "HEAD"])
+async def get_document_image(doc_id: str, image_name: str):
+    """
+    Retrieves an extracted document image (e.g. from MinerU markdown OCR output).
+    """
+    clean_name = os.path.basename(image_name)
+    image_path = STORAGE_DIR / f"{doc_id}_images" / clean_name
+    if not image_path.exists():
+        image_path = STORAGE_DIR / "images" / clean_name
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail=f"Image {clean_name} not found")
+
+    media_type = "image/jpeg"
+    lower_name = clean_name.lower()
+    if lower_name.endswith(".png"):
+        media_type = "image/png"
+    elif lower_name.endswith(".webp"):
+        media_type = "image/webp"
+    elif lower_name.endswith(".svg"):
+        media_type = "image/svg+xml"
+    elif lower_name.endswith(".gif"):
+        media_type = "image/gif"
+
+    return FileResponse(str(image_path), media_type=media_type)
+
+
+@router.post("/{doc_id}/images/{image_name:path}")
+async def upload_document_image(
+    doc_id: str,
+    image_name: str,
+    file: UploadFile = File(...)
+):
+    """
+    Uploads/syncs an extracted document image to the cloud storage.
+    """
+    clean_name = os.path.basename(image_name)
+    images_dir = STORAGE_DIR / f"{doc_id}_images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    target_path = images_dir / clean_name
+    async with aiofiles.open(target_path, "wb") as out_f:
+        while content := await file.read(64 * 1024):
+            await out_f.write(content)
+
+    return {"status": "ok", "filename": clean_name}
 
 
 @router.get("/{doc_id}/markdown", response_model=MarkdownResponse)
@@ -283,7 +340,7 @@ async def update_document_markdown(
     )
 
 
-@router.get("/{doc_id}/markdown/download")
+@router.api_route("/{doc_id}/markdown/download", methods=["GET", "HEAD"])
 async def download_document_markdown(doc_id: str, db: AsyncSession = Depends(get_db)):
     """
     Downloads the OCR Markdown file directly as an attachment.
@@ -311,7 +368,7 @@ async def download_document_markdown(doc_id: str, db: AsyncSession = Depends(get
 
 
 
-@router.get("/{doc_id}/file")
+@router.api_route("/{doc_id}/file", methods=["GET", "HEAD"])
 async def get_document_file(doc_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """
     High-performance PDF streamer supporting HTTP 206 Partial Content (Byte Range Requests).
@@ -373,13 +430,17 @@ async def trigger_document_ocr(
     )
 
     target_count = len(ocr_req.target_pages) if ocr_req.target_pages else doc.page_count
+    engine_name = "MinerU VLM" if (ocr_req.engine or "").lower() == "mineru" else "百度 PaddleOCR-VL"
     return OcrStatusResponse(
         doc_id=doc_id,
         status="processing",
         progress=0.05,
         current_page=0,
         total_pages=target_count,
-        message="已启动百度 AI Studio PaddleOCR-VL 识别任务..."
+        message=f"已启动 {engine_name} 解析任务...",
+        phase="preparing",
+        upload_speed_mb_s=0.0,
+        upload_progress=0.0
     )
 
 
@@ -402,7 +463,8 @@ async def get_document_ocr_status(doc_id: str, db: AsyncSession = Depends(get_db
             progress=1.0 if doc.ocr_status == "completed" else 0.0,
             current_page=doc.page_count if doc.ocr_status == "completed" else 0,
             total_pages=doc.page_count,
-            message="OCR 已完成" if doc.ocr_status == "completed" else ""
+            message="Markdown 转换已完成" if doc.ocr_status == "completed" else "",
+            phase="completed" if doc.ocr_status == "completed" else "idle"
         )
 
     return OcrStatusResponse(
@@ -412,8 +474,12 @@ async def get_document_ocr_status(doc_id: str, db: AsyncSession = Depends(get_db
         current_page=job_status.get("current_page", 0),
         total_pages=job_status.get("total_pages", doc.page_count),
         message=job_status.get("message", ""),
+        phase=job_status.get("phase", "idle"),
+        upload_speed_mb_s=job_status.get("upload_speed_mb_s", 0.0),
+        upload_progress=job_status.get("upload_progress", 0.0),
         error=job_status.get("error")
     )
+
 
 
 @router.post("/{doc_id}/ocr/revert", response_model=DocumentResponse)

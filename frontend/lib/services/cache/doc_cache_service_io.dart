@@ -161,8 +161,74 @@ class DocCacheServiceIo implements DocCacheService {
       final dir = await _getDir();
       final mdFile = _getMdFile(dir, docId);
       if (await mdFile.exists()) await mdFile.delete();
+      await deleteImages(docId);
     } catch (e) {
       debugPrint('Error deleting Markdown from cache: $e');
+    }
+  }
+
+  Directory _getImagesDir(Directory baseDir, String docId) =>
+      Directory('${baseDir.path}${Platform.pathSeparator}${docId}_images');
+
+  File _getImageFile(Directory baseDir, String docId, String imageName) {
+    final cleanName = imageName.split(Platform.pathSeparator).last.split('/').last;
+    return File('${_getImagesDir(baseDir, docId).path}${Platform.pathSeparator}$cleanName');
+  }
+
+  @override
+  Future<void> saveImage(String docId, String imageName, Uint8List bytes) async {
+    try {
+      final dir = await _getDir();
+      final imgDir = _getImagesDir(dir, docId);
+      if (!await imgDir.exists()) {
+        await imgDir.create(recursive: true);
+      }
+      final file = _getImageFile(dir, docId, imageName);
+      await file.writeAsBytes(bytes);
+    } catch (e) {
+      debugPrint('Error saving image to cache: $e');
+    }
+  }
+
+  @override
+  Future<Uint8List?> getImage(String docId, String imageName) async {
+    try {
+      final dir = await _getDir();
+      final file = _getImageFile(dir, docId, imageName);
+      if (await file.exists()) {
+        return await file.readAsBytes();
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Error reading image from cache: $e');
+      return null;
+    }
+  }
+
+  @override
+  Future<String?> getImagePath(String docId, String imageName) async {
+    try {
+      final dir = await _getDir();
+      final file = _getImageFile(dir, docId, imageName);
+      if (await file.exists()) {
+        return file.path;
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> deleteImages(String docId) async {
+    try {
+      final dir = await _getDir();
+      final imgDir = _getImagesDir(dir, docId);
+      if (await imgDir.exists()) {
+        await imgDir.delete(recursive: true);
+      }
+    } catch (e) {
+      debugPrint('Error deleting images from cache: $e');
     }
   }
 

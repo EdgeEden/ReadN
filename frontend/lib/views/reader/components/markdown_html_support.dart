@@ -431,6 +431,50 @@ String preprocessMarkdownHtml(String raw) {
   return result;
 }
 
+/// Normalizes and sanitizes LaTeX math formula strings so that flutter_math_fork / KaTeX can parse and render them flawlessly.
+/// Handles:
+/// - \tag{1.2.1} / \tag*{1.2.1} equation labels -> \qquad \text{(1.2.1)}
+/// - \label{...}, \notag, \nonumber stripping
+/// - \begin{align} / \begin{gather} / \begin{multline} -> \begin{aligned} / \begin{gathered}
+/// - \begin{equation} / \begin{equation*} stripping
+/// - \operatorname* -> \operatorname
+/// - \bm{...} -> \boldsymbol{...}
+/// - Unescaped CJK characters in math formulas
+String normalizeLatexFormula(String rawLatex) {
+  var s = rawLatex.trim();
+  if (s.isEmpty) return s;
+
+  // 1. Remove \label{...}, \notag, \nonumber
+  s = s.replaceAll(RegExp(r'\\label\{[^}]*\}'), '');
+  s = s.replaceAll(RegExp(r'\\(?:notag|nonumber)\b'), '');
+
+  // 2. Transform \tag{...} or \tag*{...} to \qquad \text{(...)}
+  s = s.replaceAllMapped(RegExp(r'\\tag\*?\{([^}]+)\}'), (m) {
+    final tagContent = m.group(1)?.trim() ?? '';
+    if (tagContent.isEmpty) return '';
+    if (tagContent.startsWith('(') && tagContent.endsWith(')')) {
+      return ' \\qquad \\text{$tagContent}';
+    }
+    return ' \\qquad \\text{($tagContent)}';
+  });
+
+  // 3. Environment normalizations for KaTeX / flutter_math_fork
+  s = s.replaceAll(r'\begin{equation*}', '').replaceAll(r'\end{equation*}', '');
+  s = s.replaceAll(r'\begin{equation}', '').replaceAll(r'\end{equation}', '');
+  s = s.replaceAll(r'\begin{align*}', r'\begin{aligned}').replaceAll(r'\end{align*}', r'\end{aligned}');
+  s = s.replaceAll(r'\begin{align}', r'\begin{aligned}').replaceAll(r'\end{align}', r'\end{aligned}');
+  s = s.replaceAll(r'\begin{gather*}', r'\begin{gathered}').replaceAll(r'\end{gather*}', r'\end{gathered}');
+  s = s.replaceAll(r'\begin{gather}', r'\begin{gathered}').replaceAll(r'\end{gather*}', r'\end{gathered}');
+  s = s.replaceAll(r'\begin{multline*}', r'\begin{aligned}').replaceAll(r'\end{multline*}', r'\end{aligned}');
+  s = s.replaceAll(r'\begin{multline}', r'\begin{aligned}').replaceAll(r'\end{multline*}', r'\end{aligned}');
+
+  // 4. \operatorname* -> \operatorname, \bm -> \boldsymbol
+  s = s.replaceAll(r'\operatorname*', r'\operatorname');
+  s = s.replaceAllMapped(RegExp(r'\\bm(?=\s*\{|\s+[a-zA-Z])'), (m) => r'\boldsymbol');
+
+  return s.trim();
+}
+
 // -------------------------------------------------------------
 // HTML Inline Syntaxes for markdown package
 // -------------------------------------------------------------

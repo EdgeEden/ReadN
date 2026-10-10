@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:math';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:pdfrx/pdfrx.dart' hide PdfAnnotation;
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
@@ -51,16 +50,17 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   int _currentPage = 1;
   int _totalPages = 0;
   Uint8List? _pdfBytes;
+  Uri? _pdfUri;
+  bool _useUriSource = false;
   bool _isLoadingPdf = true;
   String? _loadError;
-  double? _downloadProgress;
-  String _downloadStatusText = '正在建立连接...';
   bool _isOcrBannerDismissed = false;
   OcrStatusInfo? _ocrStatusInfo;
   Timer? _ocrPollTimer;
   final Uuid _uuid = const Uuid();
 
   ReaderViewMode _viewMode = ReaderViewMode.pdf;
+  bool _hasActivatedMarkdown = false;
   String? _markdownContent;
   bool _isLoadingMarkdown = false;
   String? _markdownError;
@@ -81,6 +81,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     _pdfController = PdfViewerController();
     _pdfController.addListener(_onPdfControllerUpdate);
     _doc = widget.document;
+    if (_viewMode == ReaderViewMode.markdown) {
+      _hasActivatedMarkdown = true;
+    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AnnotationProvider>().loadAnnotations(_doc.id);
@@ -144,37 +147,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             _doc = updatedDoc;
           });
           await _fetchMarkdownData(forceReload: true);
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: const Row(
-                  children: [
-                    Icon(Icons.check_circle_rounded, color: Colors.greenAccent),
-                    SizedBox(width: 8),
-                    Text('PaddleOCR-VL 解析完成！结构化 Markdown 已就绪。'),
-                  ],
-                ),
-                backgroundColor: const Color(0xFF1E293B),
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              ),
-            );
-          }
         }
       } else if (statusInfo.isFailed) {
         timer.cancel();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('OCR 转换失败: ${statusInfo.error ?? "未知错误"}'),
-              backgroundColor: Colors.red.shade800,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
       }
     });
   }
+
 
   Future<void> _fetchMarkdownData({bool forceReload = false}) async {
     if (!forceReload && _markdownContent != null && _markdownContent!.isNotEmpty) return;
@@ -242,6 +221,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     setState(() {
       _viewMode = mode;
       _pdfActiveSelection = null;
+      if (mode == ReaderViewMode.markdown) {
+        _hasActivatedMarkdown = true;
+      }
     });
     if (mode == ReaderViewMode.markdown) {
       if (_markdownContent == null || _markdownContent!.trim().isEmpty) {
@@ -288,15 +270,39 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   Future<void> _fetchPdfData() async {
     final docProvider = context.read<DocumentProvider>();
-    final docCache = docProvider.docCacheService;
+    final storage = docProvider.storageService;
 
-    // 1. Cache-first check: if cached, load immediately without network download
+    // 1. In Web environment, always prefer HTTP Range URI streaming.
+    // This avoids downloading huge PDFs (e.g. 100MB+) into JavaScript heap and eliminates browser hang/OOM.
+    if (kIsWeb) {
+      try {
+        final rawUrl = _doc.getFileUrl(storage.getBaseUrl());
+        final separator = rawUrl.contains('?') ? '&' : '?';
+        final fileUrl = '$rawUrl${separator}v=${_doc.updatedAt.millisecondsSinceEpoch}';
+        final uri = Uri.parse(fileUrl);
+        if (mounted) {
+          setState(() {
+            _pdfUri = uri;
+            _useUriSource = true;
+            _isLoadingPdf = false;
+            _loadError = null;
+          });
+        }
+        return;
+      } catch (e) {
+        debugPrint('Error preparing PDF URI: $e');
+      }
+    }
+
+    // 2. Cache-first check on desktop/mobile: if cached, load immediately without network download
+    final docCache = docProvider.docCacheService;
     try {
       final cachedBytes = await docCache.getPdf(_doc.id, expectedChecksum: _doc.checksum);
       if (cachedBytes != null && cachedBytes.isNotEmpty) {
         if (mounted) {
           setState(() {
             _pdfBytes = cachedBytes;
+            _useUriSource = false;
             _isLoadingPdf = false;
             _loadError = null;
           });
@@ -307,77 +313,18 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       debugPrint('Error checking local PDF cache: $e');
     }
 
-    setState(() {
-      _isLoadingPdf = true;
-      _loadError = null;
-      _downloadProgress = null;
-      _downloadStatusText = '正在建立连接...';
-    });
-
-    http.Client? client;
+    // 3. Fallback for remote streaming on desktop/mobile
     try {
-      final storage = docProvider.storageService;
       final rawUrl = _doc.getFileUrl(storage.getBaseUrl());
       final separator = rawUrl.contains('?') ? '&' : '?';
-      final fileUrl = '$rawUrl${separator}t=${DateTime.now().millisecondsSinceEpoch}';
+      final fileUrl = '$rawUrl${separator}v=${_doc.updatedAt.millisecondsSinceEpoch}';
       final uri = Uri.parse(fileUrl);
-
-      client = http.Client();
-      final request = http.Request('GET', uri);
-      final streamedResponse = await client.send(request).timeout(const Duration(seconds: 30));
-
-      if (streamedResponse.statusCode != 200 && streamedResponse.statusCode != 206) {
-        throw Exception('HTTP ${streamedResponse.statusCode}: ${streamedResponse.reasonPhrase}');
-      }
-
-      final contentLength = streamedResponse.contentLength ?? _doc.fileSize;
-
-      final bytesBuilder = BytesBuilder(copy: false);
-      int received = 0;
-      DateTime lastUpdate = DateTime.now();
-
-      await for (final chunk in streamedResponse.stream.timeout(const Duration(seconds: 120))) {
-        bytesBuilder.add(chunk);
-        received += chunk.length;
-
-        final now = DateTime.now();
-        if (now.difference(lastUpdate).inMilliseconds > 80 || (contentLength > 0 && received >= contentLength)) {
-          lastUpdate = now;
-          if (mounted) {
-            setState(() {
-              if (contentLength > 0) {
-                _downloadProgress = (received / contentLength).clamp(0.0, 1.0);
-                final mbReceived = (received / (1024 * 1024)).toStringAsFixed(1);
-                final mbTotal = (contentLength / (1024 * 1024)).toStringAsFixed(1);
-                final pct = ((received / contentLength) * 100).toStringAsFixed(0);
-                _downloadStatusText = '正在极速传输: $mbReceived MB / $mbTotal MB ($pct%)';
-              } else {
-                final mbReceived = (received / (1024 * 1024)).toStringAsFixed(1);
-                _downloadStatusText = '已传输 $mbReceived MB...';
-              }
-            });
-          }
-        }
-      }
-
       if (mounted) {
         setState(() {
-          _downloadStatusText = '传输完成，正在准备 WebAssembly 渲染...';
-        });
-      }
-
-      final completeBytes = bytesBuilder.takeBytes();
-      if (completeBytes.isEmpty) {
-        throw Exception('接收到的文档数据为空');
-      }
-
-      // Automatically persist to local cache
-      await docCache.savePdf(_doc.id, completeBytes, checksum: _doc.checksum);
-
-      if (mounted) {
-        setState(() {
-          _pdfBytes = completeBytes;
+          _pdfUri = uri;
+          _useUriSource = true;
           _isLoadingPdf = false;
+          _loadError = null;
         });
       }
     } catch (e) {
@@ -387,8 +334,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           _loadError = e.toString();
         });
       }
-    } finally {
-      client?.close();
     }
   }
 
@@ -508,7 +453,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       }
       try {
         if (_pdfController.isReady) {
-          final outline = await _pdfController.document.loadOutline();
+          final outline = await _pdfController.document.loadOutline().timeout(const Duration(seconds: 4));
           if (outline.isNotEmpty) {
             final items = outline.map((node) => _mapPdfOutlineNode(node, 1)).toList();
             if (mounted) {
@@ -527,7 +472,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       // PDF Mode
       try {
         if (_pdfController.isReady) {
-          final outline = await _pdfController.document.loadOutline();
+          final outline = await _pdfController.document.loadOutline().timeout(const Duration(seconds: 4));
           if (outline.isNotEmpty) {
             final items = outline.map((node) => _mapPdfOutlineNode(node, 1)).toList();
             if (mounted) {
@@ -622,8 +567,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     final q = query.trim().toLowerCase();
     final List<SearchResultItem> results = [];
 
-    for (int i = 0; i < _pdfController.pages.length; i++) {
-      final page = _pdfController.pages[i];
+    final pages = _pdfController.pages;
+    for (int i = 0; i < pages.length; i++) {
+      if (!mounted || _searchQuery != query) return [];
+      if (i > 0 && i % 6 == 0) {
+        await Future.delayed(Duration.zero);
+      }
+      final page = pages[i];
       final pageNum = page.pageNumber;
       try {
         final pageText = await page.loadText();
@@ -650,6 +600,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             matchCount: count,
             snippet: '...$snippet...',
           ));
+          if (results.length >= 60) break;
         }
       } catch (e) {
         // continue
@@ -736,16 +687,12 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     setState(() => _isSearching = true);
 
     List<SearchResultItem> results = [];
-    if (_viewMode == ReaderViewMode.pdf && _pdfController.isReady) {
+    if (_markdownContent != null && _markdownContent!.isNotEmpty) {
+      results = _searchMarkdownText(query);
+    } else if (_viewMode == ReaderViewMode.pdf && _pdfController.isReady) {
       results = await _searchPdfText(query);
-      if (results.isEmpty && _markdownContent != null && _markdownContent!.isNotEmpty) {
-        results = _searchMarkdownText(query);
-      }
     } else {
       results = _searchMarkdownText(query);
-      if (results.isEmpty && _pdfController.isReady) {
-        results = await _searchPdfText(query);
-      }
     }
 
     if (mounted && _searchQuery == query) {
@@ -1383,131 +1330,20 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                             children: [
                               if (_isLoadingPdf)
                                 Center(
-                                  child: Container(
-                                    width: 380,
-                                    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
-                                    decoration: BoxDecoration(
-                                      color: activeTheme.cardTheme.color,
-                                      borderRadius: BorderRadius.circular(20),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withValues(alpha: isDark ? 0.4 : 0.08),
-                                          blurRadius: 20,
-                                          offset: const Offset(0, 8),
-                                        ),
-                                      ],
-                                    ),
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        if (_downloadProgress != null)
-                                          SizedBox(
-                                            width: 54,
-                                            height: 54,
-                                            child: Stack(
-                                              alignment: Alignment.center,
-                                              children: [
-                                                CircularProgressIndicator(
-                                                  value: _downloadProgress,
-                                                  strokeWidth: 4,
-                                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                                    activeTheme.colorScheme.primary,
-                                                  ),
-                                                  backgroundColor: activeTheme.colorScheme.primary.withValues(alpha: 0.15),
-                                                ),
-                                                Text(
-                                                  '${((_downloadProgress ?? 0) * 100).toInt()}%',
-                                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                                                ),
-                                              ],
-                                            ),
-                                          )
-                                        else
-                                          SizedBox(
-                                            width: 44,
-                                            height: 44,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 3,
-                                              valueColor: AlwaysStoppedAnimation<Color>(
-                                                activeTheme.colorScheme.primary,
-                                              ),
-                                            ),
-                                          ),
-                                        const SizedBox(height: 18),
-                                        Text(
-                                          '正在载入《${widget.document.title}》',
-                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                                          textAlign: TextAlign.center,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                        const SizedBox(height: 10),
-                                        if (_downloadProgress != null)
-                                          Padding(
-                                            padding: const EdgeInsets.only(bottom: 8),
-                                            child: ClipRRect(
-                                              borderRadius: BorderRadius.circular(4),
-                                              child: LinearProgressIndicator(
-                                                value: _downloadProgress,
-                                                minHeight: 4,
-                                                valueColor: AlwaysStoppedAnimation<Color>(
-                                                  activeTheme.colorScheme.primary,
-                                                ),
-                                                backgroundColor: activeTheme.colorScheme.primary.withValues(alpha: 0.12),
-                                              ),
-                                            ),
-                                          ),
-                                        Text(
-                                          _downloadStatusText,
-                                          style: const TextStyle(fontSize: 12, color: Colors.grey),
-                                          textAlign: TextAlign.center,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
+                                  child: _buildPdfLoadingWidget(activeTheme, isDark),
                                 )
                               else if (_loadError != null)
                                 Center(
-                                  child: Container(
-                                    padding: const EdgeInsets.all(28),
-                                    decoration: BoxDecoration(
-                                      color: activeTheme.cardTheme.color,
-                                      borderRadius: BorderRadius.circular(20),
-                                      border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withValues(alpha: 0.08),
-                                          blurRadius: 16,
-                                          offset: const Offset(0, 4),
-                                        ),
-                                      ],
-                                    ),
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.error_outline_rounded, color: Colors.red, size: 48),
-                                        const SizedBox(height: 14),
-                                        const Text(
-                                          '文档加载失败',
-                                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Text('错误原因: $_loadError', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                                        const SizedBox(height: 18),
-                                        ElevatedButton.icon(
-                                          icon: const Icon(Icons.refresh_rounded),
-                                          label: const Text('重新载入'),
-                                          onPressed: _fetchPdfData,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
+                                  child: _buildPdfErrorWidget(_loadError!, _fetchPdfData, activeTheme),
                                 )
-                              else if (_pdfBytes != null)
+                              else if ((_useUriSource && _pdfUri != null) || _pdfBytes != null)
                                 _buildPdfViewer(canvasBg, pdfFilter, isDark),
                             ],
                           ),
-                          _buildMarkdownContent(context, activeTheme, isDark),
+                          if (_hasActivatedMarkdown)
+                            _buildMarkdownContent(context, activeTheme, isDark)
+                          else
+                            const SizedBox.shrink(),
                         ],
                       ),
                     ),
@@ -1550,74 +1386,231 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     );
   }
 
+  Widget _buildPdfLoadingWidget(
+    ThemeData activeTheme,
+    bool isDark, {
+    double? progress,
+    int? received,
+    int? total,
+  }) {
+    return Container(
+      width: 380,
+      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+      decoration: BoxDecoration(
+        color: activeTheme.cardTheme.color,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.4 : 0.08),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (progress != null)
+            SizedBox(
+              width: 54,
+              height: 54,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  CircularProgressIndicator(
+                    value: progress,
+                    strokeWidth: 4,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      activeTheme.colorScheme.primary,
+                    ),
+                    backgroundColor: activeTheme.colorScheme.primary.withValues(alpha: 0.15),
+                  ),
+                  Text(
+                    '${(progress * 100).toInt()}%',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            )
+          else
+            SizedBox(
+              width: 44,
+              height: 44,
+              child: CircularProgressIndicator(
+                strokeWidth: 3,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  activeTheme.colorScheme.primary,
+                ),
+              ),
+            ),
+          const SizedBox(height: 18),
+          Text(
+            '正在载入《${widget.document.title}》',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 10),
+          if (progress != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 4,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    activeTheme.colorScheme.primary,
+                  ),
+                  backgroundColor: activeTheme.colorScheme.primary.withValues(alpha: 0.12),
+                ),
+              ),
+            ),
+          Text(
+            progress != null && total != null && total > 0 && received != null
+                ? '正在极速传输: ${(received / (1024 * 1024)).toStringAsFixed(1)} MB / ${(total / (1024 * 1024)).toStringAsFixed(1)} MB'
+                : '正在流式准备渲染...',
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPdfErrorWidget(String error, VoidCallback onRetry, ThemeData activeTheme) {
+    return Container(
+      padding: const EdgeInsets.all(28),
+      decoration: BoxDecoration(
+        color: activeTheme.cardTheme.color,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.error_outline_rounded, color: Colors.red, size: 48),
+          const SizedBox(height: 14),
+          const Text(
+            '文档加载失败',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red),
+          ),
+          const SizedBox(height: 8),
+          Text('错误原因: $error', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 18),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('重新载入'),
+            onPressed: onRetry,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildPdfViewer(Color canvasBg, ColorFilter? pdfFilter, bool isDark) {
     final settings = context.read<ReaderSettingsProvider>();
-    final reloadToken = '${_doc.id}_${_doc.ocrStatus}_${_pdfBytes?.length}_${_doc.updatedAt.millisecondsSinceEpoch}';
-    Widget pdfViewerWidget = PdfViewer.data(
-      _pdfBytes!,
-      key: ValueKey(reloadToken),
-      sourceName: reloadToken,
-      controller: _pdfController,
-      params: PdfViewerParams(
-        backgroundColor: Colors.transparent,
-        margin: 16.0,
-        calculateInitialPageNumber: (document, controller) => _currentPage.clamp(1, max(1, document.pages.length)),
-        pageDropShadow: isDark
-            ? const BoxShadow(color: Colors.transparent)
-            : (settings.readingMode == ReadingMode.sepia
-                ? const BoxShadow(
-                    color: Color(0x335C3A10),
-                    blurRadius: 6,
-                    spreadRadius: 1,
-                    offset: Offset(0, 2),
-                  )
-                : const BoxShadow(
-                    color: Color(0x1A000000),
-                    blurRadius: 8,
-                    spreadRadius: 1,
-                    offset: Offset(0, 2),
-                  )),
-        enableKeyboardNavigation: true,
-        matchTextColor: Colors.amber.withValues(alpha: 0.5),
-        activeMatchTextColor: Colors.orange.withValues(alpha: 0.8),
-        pagePaintCallbacks: [
-          (canvas, pageRect, page) => _paintPageAnnotations(canvas, pageRect, page, isDark: isDark),
-        ],
-        textSelectionParams: PdfTextSelectionParams(
-          enabled: true,
-          showContextMenuAutomatically: false,
-          onTextSelectionChange: (textSelection) {
-            if (!textSelection.hasSelectedText) {
-              if (_pdfActiveSelection != null && mounted) {
-                setState(() => _pdfActiveSelection = null);
-              }
+    final activeTheme = Theme.of(context);
+    final reloadToken = '${_doc.id}_${_doc.ocrStatus}_${_doc.updatedAt.millisecondsSinceEpoch}';
+
+    final viewerParams = PdfViewerParams(
+      backgroundColor: Colors.transparent,
+      margin: 16.0,
+      calculateInitialPageNumber: (document, controller) => _currentPage.clamp(1, max(1, document.pages.length)),
+      pageDropShadow: isDark
+          ? const BoxShadow(color: Colors.transparent)
+          : (settings.readingMode == ReadingMode.sepia
+              ? const BoxShadow(
+                  color: Color(0x335C3A10),
+                  blurRadius: 6,
+                  spreadRadius: 1,
+                  offset: Offset(0, 2),
+                )
+              : const BoxShadow(
+                  color: Color(0x1A000000),
+                  blurRadius: 8,
+                  spreadRadius: 1,
+                  offset: Offset(0, 2),
+                )),
+      enableKeyboardNavigation: true,
+      matchTextColor: Colors.amber.withValues(alpha: 0.5),
+      activeMatchTextColor: Colors.orange.withValues(alpha: 0.8),
+      pagePaintCallbacks: [
+        (canvas, pageRect, page) => _paintPageAnnotations(canvas, pageRect, page, isDark: isDark),
+      ],
+      textSelectionParams: PdfTextSelectionParams(
+        enabled: true,
+        showContextMenuAutomatically: false,
+        onTextSelectionChange: (textSelection) {
+          if (!textSelection.hasSelectedText) {
+            if (_pdfActiveSelection != null && mounted) {
+              setState(() => _pdfActiveSelection = null);
             }
-          },
-        ),
-        onPageChanged: (pageNumber) {
-          if (pageNumber != null && _viewMode == ReaderViewMode.pdf) {
-            _saveCurrentPage(pageNumber);
-          }
-        },
-        onViewerReady: (document, controller) {
-          if (mounted) {
-            setState(() {
-              _totalPages = document.pages.length;
-            });
-            if (controller.currentZoom > 0) {
-              _basePdfZoom = controller.currentZoom;
-            }
-            context.read<ReaderSettingsProvider>().setZoomScale(1.0);
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted && _currentPage > 1 && controller.isReady) {
-                controller.goToPage(pageNumber: _currentPage);
-              }
-            });
-            _loadOutline();
           }
         },
       ),
+      onPageChanged: (pageNumber) {
+        if (pageNumber != null && _viewMode == ReaderViewMode.pdf) {
+          _saveCurrentPage(pageNumber);
+        }
+      },
+      onViewerReady: (document, controller) {
+        if (mounted) {
+          setState(() {
+            _totalPages = document.pages.length;
+          });
+          if (controller.currentZoom > 0) {
+            _basePdfZoom = controller.currentZoom;
+          }
+          context.read<ReaderSettingsProvider>().setZoomScale(1.0);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _currentPage > 1 && controller.isReady) {
+              controller.goToPage(pageNumber: _currentPage);
+            }
+          });
+          _loadOutline();
+        }
+      },
+      loadingBannerBuilder: (context, bytesDownloaded, totalBytes) {
+        final total = (totalBytes != null && totalBytes > 0) ? totalBytes : _doc.fileSize;
+        final progress = (total > 0 && bytesDownloaded > 0) ? (bytesDownloaded / total).clamp(0.0, 1.0) : null;
+        return Center(
+          child: _buildPdfLoadingWidget(activeTheme, isDark, progress: progress, received: bytesDownloaded, total: total),
+        );
+      },
+      errorBannerBuilder: (context, error, stackTrace, documentRef) {
+        return Center(
+          child: _buildPdfErrorWidget(error.toString(), _fetchPdfData, activeTheme),
+        );
+      },
     );
+
+    Widget pdfViewerWidget;
+    if (_useUriSource && _pdfUri != null) {
+      pdfViewerWidget = PdfViewer.uri(
+        _pdfUri!,
+        key: ValueKey('uri_$reloadToken'),
+        controller: _pdfController,
+        preferRangeAccess: true,
+        params: viewerParams,
+      );
+    } else {
+      pdfViewerWidget = PdfViewer.data(
+        _pdfBytes!,
+        key: ValueKey('data_$reloadToken'),
+        sourceName: reloadToken,
+        controller: _pdfController,
+        params: viewerParams,
+      );
+    }
 
     if (pdfFilter != null) {
       pdfViewerWidget = ColorFiltered(

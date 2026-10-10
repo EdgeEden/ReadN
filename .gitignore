@@ -1,0 +1,15 @@
+*.tar.gz
+*.zip
+*.log
+__pycache__/
+*.pyc
+.pytest_cache/
+.dart_tool/
+.packages
+build/
+backend/storage/*.pdf
+backend/storage/*.orig.pdf
+backend/storage/*.tmp.pdf
+backend/storage/*.md
+backend/storage/*_images/
+backend/readn.db

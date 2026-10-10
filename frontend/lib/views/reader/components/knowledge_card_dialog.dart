@@ -417,6 +417,7 @@ class _KnowledgeCardDialogState extends State<KnowledgeCardDialog> {
                               ? _contentController.text.trim()
                               : '*（卡片内容为空）*',
                           selectable: true,
+                          softLineBreak: true,
                           extensionSet: md.ExtensionSet(
                             md.ExtensionSet.gitHubFlavored.blockSyntaxes,
                             [

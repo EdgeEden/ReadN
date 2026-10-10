@@ -197,6 +197,13 @@ class DocumentProvider extends ChangeNotifier {
 
   Future<bool> triggerOcr(
     String docId, {
+    String engine = "mineru",
+    String? mineruToken,
+    String mineruModelVersion = "vlm",
+    String mineruLanguage = "auto",
+    bool enableFormula = true,
+    bool enableTable = true,
+    bool ossAccelerate = true,
     String? apiToken,
     String? apiUrl,
     String? modelName,
@@ -209,6 +216,13 @@ class DocumentProvider extends ChangeNotifier {
     try {
       await apiService.startOcr(
         docId,
+        engine: engine,
+        mineruToken: mineruToken,
+        mineruModelVersion: mineruModelVersion,
+        mineruLanguage: mineruLanguage,
+        enableFormula: enableFormula,
+        enableTable: enableTable,
+        ossAccelerate: ossAccelerate,
         apiToken: apiToken,
         apiUrl: apiUrl,
         modelName: modelName,
@@ -228,11 +242,12 @@ class DocumentProvider extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      _errorMessage = '启动 OCR 失败: $e';
+      _errorMessage = '启动 Markdown 转换失败: $e';
       notifyListeners();
       return false;
     }
   }
+
 
   Future<Map<String, dynamic>> checkOcrProgress(String docId) async {
     try {

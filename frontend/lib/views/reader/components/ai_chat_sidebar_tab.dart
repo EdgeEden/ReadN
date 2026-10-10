@@ -627,6 +627,7 @@ class _AiChatSidebarTabState extends State<AiChatSidebarTab> with SingleTickerPr
                   MarkdownBody(
                     data: msg.content,
                     selectable: true,
+                    softLineBreak: true,
                     extensionSet: md.ExtensionSet(
                       md.ExtensionSet.gitHubFlavored.blockSyntaxes,
                       [

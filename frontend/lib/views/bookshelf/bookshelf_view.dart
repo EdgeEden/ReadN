@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../config/app_version.dart';
 import '../../models/document_model.dart';
 import '../../providers/document_provider.dart';
 import '../reader/reader_view.dart';
@@ -70,6 +71,30 @@ class _BookshelfViewState extends State<BookshelfView> {
               child: Text(
                 'Cloud Sync',
                 style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: theme.colorScheme.primary),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Tooltip(
+              message: '当前版本: ${AppVersion.displayVersion} (构建: ${AppVersion.buildNumber})',
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.15),
+                    width: 0.8,
+                  ),
+                ),
+                child: Text(
+                  AppVersion.displayVersion,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.65),
+                    letterSpacing: 0.2,
+                  ),
+                ),
               ),
             ),
           ],

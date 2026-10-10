@@ -382,6 +382,7 @@ class _CardsSidebarTabState extends State<CardsSidebarTab> {
                                   child: MarkdownBody(
                                     data: card.noteContent.trim(),
                                     selectable: false,
+                                    softLineBreak: true,
                                     extensionSet: md.ExtensionSet(
                                       md.ExtensionSet.gitHubFlavored.blockSyntaxes,
                                       [

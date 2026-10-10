@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import '../models/document_model.dart';
 import '../models/annotation_model.dart';
@@ -233,9 +234,16 @@ class ApiService {
     }
   }
 
-  // OCR Dual-Layer PDF & Markdown Conversion (Baidu AI Studio PaddleOCR-VL)
+  // OCR & Structured Markdown Conversion (MinerU VLM / Baidu PaddleOCR-VL)
   Future<Map<String, dynamic>> startOcr(
     String docId, {
+    String engine = "mineru",
+    String? mineruToken,
+    String mineruModelVersion = "vlm",
+    String mineruLanguage = "auto",
+    bool enableFormula = true,
+    bool enableTable = true,
+    bool ossAccelerate = true,
     String? apiToken,
     String? apiUrl,
     String? modelName,
@@ -246,7 +254,13 @@ class ApiService {
     bool useChartRecognition = false,
   }) async {
     final payload = {
-      'engine': 'paddleocr_vl',
+      'engine': engine,
+      'mineru_token': mineruToken,
+      'mineru_model_version': mineruModelVersion,
+      'mineru_language': mineruLanguage,
+      'enable_formula': enableFormula,
+      'enable_table': enableTable,
+      'oss_accelerate': ossAccelerate,
       'api_token': apiToken,
       'api_url': apiUrl,
       'model_name': modelName,
@@ -267,6 +281,7 @@ class ApiService {
       throw Exception('Failed to start OCR: ${res.statusCode} - ${res.body}');
     }
   }
+
 
   Future<Map<String, dynamic>> getOcrStatus(String docId) async {
     final res = await _get(_uri('/api/documents/$docId/ocr-status'));
@@ -322,5 +337,25 @@ class ApiService {
       throw Exception('Failed to save markdown: ${res.statusCode}');
     }
   }
+
+  // Document Image API
+  String getDocumentImageUrl(String docId, String imageName) {
+    final cleanName = imageName.split('/').last;
+    return _uri('/api/documents/$docId/images/$cleanName').toString();
+  }
+
+  Future<bool> uploadDocumentImage(String docId, String imageName, Uint8List imageBytes) async {
+    try {
+      final cleanName = imageName.split('/').last;
+      final uri = _uri('/api/documents/$docId/images/$cleanName');
+      final request = http.MultipartRequest('POST', uri);
+      request.files.add(http.MultipartFile.fromBytes('file', imageBytes, filename: cleanName));
+      final streamedResponse = await request.send();
+      return streamedResponse.statusCode == 200 || streamedResponse.statusCode == 201;
+    } catch (_) {
+      return false;
+    }
+  }
 }
+
 

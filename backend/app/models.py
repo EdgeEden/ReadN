@@ -140,7 +140,18 @@ class MarkdownUpdateRequest(BaseModel):
 
 
 class OcrRequest(BaseModel):
-    engine: str = "paddleocr_vl"  # Baidu AI Studio PaddleOCR-VL API
+    engine: str = "mineru"  # "mineru" (默认) | "paddleocr_vl"
+    
+    # MinerU API 配置
+    mineru_token: Optional[str] = "REDACTED_MINERU_TOKEN"
+    mineru_model_version: str = "vlm"  # "vlm" | "pipeline" | "MinerU-HTML"
+    mineru_language: str = "auto"  # "auto" | "ch" | "en" | "ja" | "ko" 等
+    enable_formula: bool = True
+    enable_table: bool = True
+    layout_model: str = "doclayout_yolo"
+    oss_accelerate: bool = True  # 是否使用海外/全球 OSS 传输加速专线
+    
+    # 百度 PaddleOCR-VL API 配置 (兼容保留)
     api_token: Optional[str] = "REDACTED_BAIDU_TOKEN"
     api_url: Optional[str] = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
     model_name: Optional[str] = "PaddleOCR-VL-1.6"
@@ -181,12 +192,16 @@ class OcrStatusResponse(BaseModel):
     current_page: int = 0
     total_pages: int = 0
     message: str = ""
+    phase: Optional[str] = "idle"  # "preparing" | "uploading" | "processing" | "downloading" | "merging" | "completed"
+    upload_speed_mb_s: Optional[float] = None
+    upload_progress: Optional[float] = None
     error: Optional[str] = None
 
 
 class OcrRevertRequest(BaseModel):
     page_scope: str = "current"  # "current" | "all" | "custom"
     target_pages: Optional[List[int]] = None  # 1-indexed list of pages to revert, e.g. [1, 3]
+
 
 
 

@@ -317,6 +317,380 @@ def run_paddleocr_vl_ocr_sync(
             current_page=num_target_pages,
             total_pages=num_target_pages
         )
+class ChunkInfo:
+    def __init__(self, chunk_index: int, pages: List[int], pdf_bytes: bytes, size_bytes: int):
+        self.chunk_index = chunk_index
+        self.pages = pages
+        self.pdf_bytes = pdf_bytes
+        self.size_bytes = size_bytes
+
+
+def split_pdf_into_chunks(
+    input_path: str,
+    target_pages: Optional[List[int]] = None,
+    max_pages_per_chunk: int = 200,
+    max_size_mb: int = 180
+) -> List[ChunkInfo]:
+    """
+    静默将超大或超长 PDF 按 MinerU 平台限制 (<=200页, <=200MB) 自动切分成若干连续子 PDF 分片。
+    """
+    src_doc = fitz.open(input_path)
+    try:
+        total_doc_pages = len(src_doc)
+        if not target_pages:
+            active_pages = list(range(1, total_doc_pages + 1))
+        else:
+            active_pages = sorted(list(set([p for p in target_pages if 1 <= p <= total_doc_pages])))
+            if not active_pages:
+                active_pages = list(range(1, total_doc_pages + 1))
+
+        chunks: List[ChunkInfo] = []
+        max_bytes = max_size_mb * 1024 * 1024
+
+        # Group pages into slices of at most max_pages_per_chunk
+        page_groups = []
+        for i in range(0, len(active_pages), max_pages_per_chunk):
+            page_groups.append(active_pages[i:i + max_pages_per_chunk])
+
+        chunk_idx = 0
+        for group in page_groups:
+            # Build sub-pdf
+            sub_doc = fitz.open()
+            try:
+                for p_num in group:
+                    sub_doc.insert_pdf(src_doc, from_page=p_num - 1, to_page=p_num - 1)
+                sub_bytes = sub_doc.tobytes()
+
+                # If size still exceeds max_bytes, further subdivide
+                if len(sub_bytes) > max_bytes and len(group) > 1:
+                    mid = len(group) // 2
+                    sub_groups = [group[:mid], group[mid:]]
+                    for sg in sub_groups:
+                        sd = fitz.open()
+                        try:
+                            for pn in sg:
+                                sd.insert_pdf(src_doc, from_page=pn - 1, to_page=pn - 1)
+                            sb = sd.tobytes()
+                            chunks.append(ChunkInfo(chunk_idx, sg, sb, len(sb)))
+                            chunk_idx += 1
+                        finally:
+                            sd.close()
+                else:
+                    chunks.append(ChunkInfo(chunk_idx, group, sub_bytes, len(sub_bytes)))
+                    chunk_idx += 1
+            finally:
+                sub_doc.close()
+
+        return chunks
+    finally:
+        src_doc.close()
+
+
+def run_mineru_ocr_sync(
+    input_path: str,
+    markdown_path: Optional[str] = None,
+    target_pages: Optional[List[int]] = None,
+    api_token: str = "REDACTED_MINERU_TOKEN",
+    model_version: str = "vlm",
+    language: str = "auto",
+    enable_formula: bool = True,
+    enable_table: bool = True,
+    layout_model: str = "doclayout_yolo",
+    oss_accelerate: bool = True,
+    progress_callback=None
+) -> bool:
+    """
+    执行 MinerU API v4 结构化 Markdown 解析 (支持海外/全球 OSS 专线传输加速与静默自动分片合并)。
+    """
+    token_clean = (api_token or "").strip()
+    if token_clean.lower().startswith("bearer "):
+        token_clean = token_clean[7:].strip()
+
+    headers = {
+        "Authorization": f"Bearer {token_clean}",
+        "Content-Type": "application/json"
+    }
+
+    # 1. 静默自动分片
+    if progress_callback:
+        progress_callback(0.05, "正在准备文档并检测分片...", phase="preparing", current_page=0, total_pages=len(target_pages or []))
+
+    chunks = split_pdf_into_chunks(input_path, target_pages, max_pages_per_chunk=200, max_size_mb=180)
+    total_chunks = len(chunks)
+    total_target_pages = sum(len(c.pages) for c in chunks)
+    logger.info(f"MinerU: Target document split into {total_chunks} chunk(s), total target pages: {total_target_pages}")
+
+    chunk_markdowns: Dict[int, str] = {}
+
+    for c in chunks:
+        chunk_no = c.chunk_index + 1
+        chunk_page_count = len(c.pages)
+        chunk_size_mb = c.size_bytes / (1024 * 1024)
+
+        # 2. 申请上传预签名 URL 与 Batch ID
+        if progress_callback:
+            base_p = 0.05 + (0.90 * (c.chunk_index / total_chunks))
+            progress_callback(
+                base_p,
+                f"正在申请 MinerU 解析任务 [分片 {chunk_no}/{total_chunks}]...",
+                phase="preparing",
+                current_page=c.pages[0],
+                total_pages=total_target_pages
+            )
+
+        payload = {
+            "files": [
+                {
+                    "name": f"chunk_{chunk_no}.pdf",
+                    "data_id": f"chunk_{int(time.time())}_{c.chunk_index}"
+                }
+            ],
+            "model_version": model_version,
+            "enable_formula": enable_formula,
+            "enable_table": enable_table,
+            "layout_model": layout_model
+        }
+        if language and language != "auto":
+            payload["language"] = language
+
+        req_res = requests.post("https://mineru.net/api/v4/file-urls/batch", headers=headers, json=payload, timeout=60)
+        if req_res.status_code != 200:
+            raise Exception(f"MinerU API 申请上传 URL 失败 ({req_res.status_code}): {req_res.text}")
+
+        res_json = req_res.json()
+        if res_json.get("code") != 0 or "data" not in res_json:
+            raise Exception(f"MinerU API 错误: {res_json.get('msg', req_res.text)}")
+
+        batch_id = res_json["data"]["batch_id"]
+        file_urls = res_json["data"]["file_urls"]
+        if not file_urls:
+            raise Exception("MinerU API 未返回有效的 file_urls")
+
+        raw_upload_url = file_urls[0]
+        # ⚡ 专线传输加速域名替换
+        if oss_accelerate and "mineru.oss-cn-shanghai.aliyuncs.com" in raw_upload_url:
+            upload_url = raw_upload_url.replace(
+                "mineru.oss-cn-shanghai.aliyuncs.com",
+                "mineru.oss-accelerate-overseas.aliyuncs.com"
+            )
+        else:
+            upload_url = raw_upload_url
+
+        # 3. 流式上传 PDF 分片至 OSS
+        t_upload_start = time.time()
+        upload_headers = {"Content-Length": str(c.size_bytes)}
+
+        if progress_callback:
+            progress_callback(
+                base_p + 0.02,
+                f"正在上传文档 [分片 {chunk_no}/{total_chunks}]: 0.0/{chunk_size_mb:.1f} MB (0%)",
+                phase="uploading",
+                upload_speed_mb_s=0.0,
+                upload_progress=0.0,
+                current_page=c.pages[0],
+                total_pages=total_target_pages
+            )
+
+        # PUT Upload (Binary streaming)
+        put_res = requests.put(upload_url, data=c.pdf_bytes, headers=upload_headers, timeout=600)
+        t_upload_cost = time.time() - t_upload_start
+        upload_speed = chunk_size_mb / t_upload_cost if t_upload_cost > 0 else 0.0
+
+        if put_res.status_code not in (200, 201):
+            raise Exception(f"MinerU OSS 上传失败 ({put_res.status_code}): {put_res.text}")
+
+        logger.info(f"MinerU Chunk {chunk_no} uploaded successfully in {t_upload_cost:.2f}s ({upload_speed:.2f} MB/s)")
+
+        if progress_callback:
+            progress_callback(
+                base_p + 0.05,
+                f"上传完成 [分片 {chunk_no}/{total_chunks}] • 速率: {upload_speed:.1f} MB/s，等待云端排队解析...",
+                phase="processing",
+                upload_speed_mb_s=upload_speed,
+                upload_progress=1.0,
+                current_page=c.pages[0],
+                total_pages=total_target_pages
+            )
+
+        # 4. 轮询云端解析状态
+        poll_url = f"https://mineru.net/api/v4/extract-results/batch/{batch_id}"
+        full_zip_url = None
+        max_retries = 300  # 300 * 3s = 900s timeout per chunk
+        dots = 0
+
+        for attempt in range(max_retries):
+            time.sleep(3)
+            dots += 1
+            try:
+                poll_res = requests.get(poll_url, headers=headers, timeout=30)
+                if poll_res.status_code != 200:
+                    continue
+                poll_data = poll_res.json().get("data", {})
+            except Exception as e:
+                logger.warning(f"MinerU polling warning (attempt {attempt+1}): {e}")
+                continue
+
+            extract_results = poll_data.get("extract_result", [])
+            if not extract_results:
+                continue
+
+            item = extract_results[0]
+            state = item.get("state", "pending")
+            progress_info = item.get("extract_progress", "")
+            prog_label = f" [进度: {progress_info}]" if progress_info else ""
+
+            if state == "pending":
+                if progress_callback:
+                    progress_callback(
+                        base_p + 0.08,
+                        f"MinerU 云端任务排队中 [分片 {chunk_no}/{total_chunks}]" + ("." * (dots % 4)),
+                        phase="processing",
+                        current_page=c.pages[0],
+                        total_pages=total_target_pages
+                    )
+            elif state == "running":
+                if progress_callback:
+                    progress_callback(
+                        base_p + 0.15 + (0.50 * (min(attempt * 3, 200) / 200.0) / total_chunks),
+                        f"MinerU VLM 正在深度解析 [分片 {chunk_no}/{total_chunks}]{prog_label}...",
+                        phase="processing",
+                        current_page=c.pages[0],
+                        total_pages=total_target_pages
+                    )
+            elif state == "done":
+                full_zip_url = item.get("full_zip_url")
+                break
+            elif state == "failed":
+                err_msg = item.get("err_msg", "未知错误")
+                raise Exception(f"MinerU 云端解析失败: {err_msg}")
+
+        if not full_zip_url:
+            raise Exception(f"MinerU 解析超时或未返回 full_zip_url [分片 {chunk_no}]")
+
+        # 5. 专线高速下载 Zip 结果包并解压提取 full.md
+        if oss_accelerate and "mineru.oss-cn-shanghai.aliyuncs.com" in full_zip_url:
+            zip_download_url = full_zip_url.replace(
+                "mineru.oss-cn-shanghai.aliyuncs.com",
+                "mineru.oss-accelerate-overseas.aliyuncs.com"
+            )
+        else:
+            zip_download_url = full_zip_url
+
+        if progress_callback:
+            progress_callback(
+                base_p + 0.80 / total_chunks,
+                f"正在下载结果包 [分片 {chunk_no}/{total_chunks}]...",
+                phase="downloading",
+                current_page=c.pages[-1],
+                total_pages=total_target_pages
+            )
+
+        zip_resp = requests.get(zip_download_url, timeout=120)
+        zip_resp.raise_for_status()
+
+        import io
+        import zipfile
+        chunk_md_text = ""
+        
+        # Prepare document images directory (e.g. storage/documents/{doc_id}_images)
+        effective_md_target = markdown_path or str(Path(input_path).with_suffix(".md"))
+        doc_images_dir = Path(effective_md_target).parent / f"{Path(input_path).stem}_images"
+        try:
+            doc_images_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
+            # 1. Extract all images from zip
+            for item in zf.infolist():
+                fname = item.filename
+                if fname.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg")) and not fname.startswith("__MACOSX"):
+                    clean_img_name = Path(fname).name
+                    try:
+                        with zf.open(item) as src_img, open(doc_images_dir / clean_img_name, "wb") as dst_img:
+                            dst_img.write(src_img.read())
+                    except Exception as e:
+                        logger.warning(f"Error extracting image {fname}: {e}")
+
+            # 2. Extract full.md markdown
+            md_names = [n for n in zf.namelist() if n.endswith(".md")]
+            target_md_name = None
+            for n in md_names:
+                if "full.md" in n:
+                    target_md_name = n
+                    break
+            if not target_md_name and md_names:
+                target_md_name = md_names[0]
+
+            if target_md_name:
+                with zf.open(target_md_name) as mf:
+                    chunk_md_text = mf.read().decode("utf-8", errors="ignore")
+
+        if not chunk_md_text:
+            raise Exception(f"未在 MinerU 结果包中找到 Markdown 内容 [分片 {chunk_no}]")
+
+        chunk_markdowns[c.chunk_index] = chunk_md_text
+
+    # 6. 合并所有分片的 Markdown 并写入目标文件
+    if progress_callback:
+        progress_callback(0.95, "正在合并 Markdown 结构化文档...", phase="merging", current_page=total_target_pages, total_pages=total_target_pages)
+
+    effective_md_path = markdown_path or str(Path(input_path).with_suffix(".md"))
+    
+    # 构建最终 Markdown
+    if len(chunks) == 1 and not target_pages:
+        # 单文件全篇转换，直接写入
+        final_md = chunk_markdowns.get(0, "")
+    else:
+        # 多分片或指定页码转换，按 <!-- Page X --> 格式组织与合并
+        existing_pages = {}
+        if os.path.exists(effective_md_path):
+            try:
+                with open(effective_md_path, "r", encoding="utf-8") as f_md:
+                    existing_content = f_md.read()
+                page_splits = re.split(r'<!--\s*Page\s+(\d+)\s*-->', existing_content, flags=re.IGNORECASE)
+                if len(page_splits) > 1:
+                    for j in range(1, len(page_splits), 2):
+                        try:
+                            p_no = int(page_splits[j])
+                            p_txt = page_splits[j + 1].strip()
+                            existing_pages[p_no] = p_txt
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.warning(f"Error reading existing markdown {effective_md_path}: {e}")
+
+        # 写入各分片内容
+        for c in chunks:
+            cmd = chunk_markdowns.get(c.chunk_index, "")
+            if not cmd:
+                continue
+            # 若单分片内包含多个逻辑页或单段落，将该分片内容赋给起始页
+            start_p = c.pages[0]
+            existing_pages[start_p] = cmd
+
+        sorted_pnums = sorted(existing_pages.keys())
+        if sorted_pnums:
+            md_parts = []
+            for p_no in sorted_pnums:
+                md_parts.append(f"<!-- Page {p_no} -->\n\n{existing_pages[p_no]}")
+            final_md = "\n\n".join(md_parts)
+        else:
+            final_md = "\n\n".join([chunk_markdowns[c.chunk_index] for c in chunks if c.chunk_index in chunk_markdowns])
+
+    with open(effective_md_path, "w", encoding="utf-8") as f_md:
+        f_md.write(final_md)
+
+    logger.info(f"MinerU Markdown saved successfully: {effective_md_path}")
+
+    if progress_callback:
+        progress_callback(
+            1.0,
+            f"MinerU 解析完成！已提取 {total_target_pages} 页高质量 Markdown。",
+            phase="completed",
+            current_page=total_target_pages,
+            total_pages=total_target_pages
+        )
     return True
 
 
@@ -326,40 +700,55 @@ def run_ocr_sync_dispatcher(
     progress_callback=None
 ) -> bool:
     """
-    Executes Baidu AI Studio PaddleOCR-VL Online API pipeline.
-    Extracts structured Markdown (with LaTeX math formulas & HTML tables).
+    分发 OCR/Markdown 解析任务 (支持 MinerU 与 PaddleOCR-VL 引擎)。
     """
     target_pages = ocr_req.target_pages
+    engine = (ocr_req.engine or "mineru").lower().strip()
 
-    return run_paddleocr_vl_ocr_sync(
-        input_path=input_path,
-        markdown_path=str(Path(input_path).with_suffix(".md")),
-        target_pages=target_pages,
-        api_token=ocr_req.api_token or "REDACTED_BAIDU_TOKEN",
-        api_url=ocr_req.api_url or "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
-        model_name=ocr_req.model_name or "PaddleOCR-VL-1.6",
-        optional_payload={
-            "markdownIgnoreLabels": ocr_req.markdown_ignore_labels,
-            "useDocOrientationClassify": ocr_req.use_doc_orientation_classify,
-            "useDocUnwarping": ocr_req.use_doc_unwarping,
-            "useLayoutDetection": ocr_req.use_layout_detection,
-            "useChartRecognition": ocr_req.use_chart_recognition,
-            "useSealRecognition": ocr_req.use_seal_recognition,
-            "useOcrForImageBlock": ocr_req.use_ocr_for_image_block,
-            "mergeTables": ocr_req.merge_tables,
-            "relevelTitles": ocr_req.relevel_titles,
-            "layoutShapeMode": ocr_req.layout_shape_mode,
-            "promptLabel": ocr_req.prompt_label,
-            "repetitionPenalty": ocr_req.repetition_penalty,
-            "temperature": ocr_req.temperature,
-            "topP": ocr_req.top_p,
-            "minPixels": ocr_req.min_pixels,
-            "maxPixels": ocr_req.max_pixels,
-            "layoutNms": ocr_req.layout_nms,
-            "restructurePages": ocr_req.restructure_pages,
-        },
-        progress_callback=progress_callback
-    )
+    if engine == "mineru":
+        return run_mineru_ocr_sync(
+            input_path=input_path,
+            markdown_path=str(Path(input_path).with_suffix(".md")),
+            target_pages=target_pages,
+            api_token=ocr_req.mineru_token or "REDACTED_MINERU_TOKEN",
+            model_version=ocr_req.mineru_model_version or "vlm",
+            language=ocr_req.mineru_language or "auto",
+            enable_formula=ocr_req.enable_formula,
+            enable_table=ocr_req.enable_table,
+            layout_model=ocr_req.layout_model or "doclayout_yolo",
+            oss_accelerate=ocr_req.oss_accelerate,
+            progress_callback=progress_callback
+        )
+    else:
+        return run_paddleocr_vl_ocr_sync(
+            input_path=input_path,
+            markdown_path=str(Path(input_path).with_suffix(".md")),
+            target_pages=target_pages,
+            api_token=ocr_req.api_token or "REDACTED_BAIDU_TOKEN",
+            api_url=ocr_req.api_url or "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
+            model_name=ocr_req.model_name or "PaddleOCR-VL-1.6",
+            optional_payload={
+                "markdownIgnoreLabels": ocr_req.markdown_ignore_labels,
+                "useDocOrientationClassify": ocr_req.use_doc_orientation_classify,
+                "useDocUnwarping": ocr_req.use_doc_unwarping,
+                "useLayoutDetection": ocr_req.use_layout_detection,
+                "useChartRecognition": ocr_req.use_chart_recognition,
+                "useSealRecognition": ocr_req.use_seal_recognition,
+                "useOcrForImageBlock": ocr_req.use_ocr_for_image_block,
+                "mergeTables": ocr_req.merge_tables,
+                "relevelTitles": ocr_req.relevel_titles,
+                "layoutShapeMode": ocr_req.layout_shape_mode,
+                "promptLabel": ocr_req.prompt_label,
+                "repetitionPenalty": ocr_req.repetition_penalty,
+                "temperature": ocr_req.temperature,
+                "topP": ocr_req.top_p,
+                "minPixels": ocr_req.min_pixels,
+                "maxPixels": ocr_req.max_pixels,
+                "layoutNms": ocr_req.layout_nms,
+                "restructurePages": ocr_req.restructure_pages,
+            },
+            progress_callback=progress_callback
+        )
 
 
 def ensure_orig_pdf_exists(file_path: Path) -> Path:
@@ -443,6 +832,9 @@ class OcrJobManager:
             "current_page": 0,
             "total_pages": 0,
             "message": "",
+            "phase": "idle",
+            "upload_speed_mb_s": 0.0,
+            "upload_progress": 0.0,
             "error": None
         })
 
@@ -454,6 +846,9 @@ class OcrJobManager:
         current_page: int = 0,
         total_pages: int = 0,
         message: str = "",
+        phase: str = "processing",
+        upload_speed_mb_s: Optional[float] = None,
+        upload_progress: Optional[float] = None,
         error: Optional[str] = None
     ):
         self._jobs[doc_id] = {
@@ -463,6 +858,9 @@ class OcrJobManager:
             "current_page": current_page,
             "total_pages": total_pages,
             "message": message,
+            "phase": phase,
+            "upload_speed_mb_s": upload_speed_mb_s,
+            "upload_progress": upload_progress,
             "error": error
         }
 
@@ -475,6 +873,7 @@ class OcrJobManager:
             pass
 
         target_count = len(ocr_req.target_pages) if ocr_req.target_pages else init_total_pages
+        engine_name = "MinerU VLM" if (ocr_req.engine or "").lower() == "mineru" else "百度 PaddleOCR-VL"
 
         self.set_job_status(
             doc_id,
@@ -482,17 +881,29 @@ class OcrJobManager:
             progress=0.05,
             current_page=0,
             total_pages=target_count,
-            message="已启动百度 AI Studio PaddleOCR-VL 任务..."
+            message=f"已启动 {engine_name} 任务...",
+            phase="preparing"
         )
 
-        def progress_cb(prog: float, msg: str, current_page: int = 0, total_pages: int = target_count):
+        def progress_cb(
+            prog: float,
+            msg: str,
+            current_page: int = 0,
+            total_pages: int = target_count,
+            phase: str = "processing",
+            upload_speed_mb_s: Optional[float] = None,
+            upload_progress: Optional[float] = None
+        ):
             self.set_job_status(
                 doc_id,
                 "processing",
                 progress=prog,
                 current_page=current_page,
                 total_pages=total_pages or target_count,
-                message=msg
+                message=msg,
+                phase=phase,
+                upload_speed_mb_s=upload_speed_mb_s,
+                upload_progress=upload_progress
             )
 
         try:
@@ -506,7 +917,6 @@ class OcrJobManager:
             )
 
             if success:
-                # Update database
                 async with db_session_factory() as db:
                     stmt = select(DocumentModel).where(DocumentModel.id == doc_id)
                     result = await db.execute(stmt)
@@ -521,10 +931,11 @@ class OcrJobManager:
                     progress=1.0,
                     current_page=target_count,
                     total_pages=target_count,
-                    message="PaddleOCR-VL 识别完成！Markdown 文档已就绪。"
+                    message=f"{engine_name} 解析完成！Markdown 文档已就绪。",
+                    phase="completed"
                 )
             else:
-                raise Exception("PaddleOCR-VL 未能生成 Markdown 结果")
+                raise Exception(f"{engine_name} 未能生成 Markdown 结果")
 
         except Exception as e:
             logger.error(f"OCR task failed for {doc_id}: {e}", exc_info=True)
@@ -534,10 +945,10 @@ class OcrJobManager:
                 progress=0.0,
                 current_page=0,
                 total_pages=target_count,
-                message="OCR 转换失败",
+                message="Markdown 转换失败",
+                phase="idle",
                 error=str(e)
             )
-            # Update DB status
             async with db_session_factory() as db:
                 stmt = select(DocumentModel).where(DocumentModel.id == doc_id)
                 result = await db.execute(stmt)
@@ -548,4 +959,5 @@ class OcrJobManager:
 
 
 ocr_job_manager = OcrJobManager()
+
 

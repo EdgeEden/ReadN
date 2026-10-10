@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -10,6 +12,7 @@ import '../../../models/document_model.dart';
 import '../../../providers/annotation_provider.dart';
 import '../../../providers/document_provider.dart';
 import '../../../providers/reader_settings_provider.dart';
+import '../../../services/cache/doc_cache_service.dart';
 import '../../../theme/app_theme.dart';
 import 'floating_selection_bar.dart';
 import 'knowledge_card_dialog.dart';
@@ -315,7 +318,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     final pageRegex = RegExp(r'<!--\s*Page\s+(\d+)\s*-->', caseSensitive: false);
     final matches = pageRegex.allMatches(rawMarkdown).toList();
 
-    final List<MarkdownPageChunk> chunks = [];
+    final List<MarkdownPageChunk> rawChunks = [];
 
     if (matches.isNotEmpty) {
       _hasExplicitPageMarkers = true;
@@ -329,7 +332,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
         final content = rawMarkdown.substring(startIndex, endIndex).trim();
 
         if (content.isNotEmpty) {
-          chunks.add(MarkdownPageChunk(
+          rawChunks.add(MarkdownPageChunk(
             pageNumber: pageNum,
             content: content,
           ));
@@ -339,44 +342,84 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
       _hasExplicitPageMarkers = false;
     }
 
-    // Fallback: If no <!-- Page X --> markers present, split by top-level H1 headers or ~70 lines
-    if (chunks.isEmpty) {
-      final lines = rawMarkdown.split('\n');
-      final List<String> currentChunkLines = [];
-      int chunkPage = 1;
-
-      for (final line in lines) {
-        currentChunkLines.add(line);
-        if (currentChunkLines.length >= 70 || (currentChunkLines.length >= 30 && line.trim().startsWith('# '))) {
-          final chunkText = currentChunkLines.join('\n').trim();
-          if (chunkText.isNotEmpty) {
-            chunks.add(MarkdownPageChunk(
-              pageNumber: chunkPage++,
-              content: chunkText,
-            ));
-            currentChunkLines.clear();
-          }
-        }
-      }
-      if (currentChunkLines.isNotEmpty) {
-        final chunkText = currentChunkLines.join('\n').trim();
-        if (chunkText.isNotEmpty) {
-          chunks.add(MarkdownPageChunk(
-            pageNumber: chunkPage,
-            content: chunkText,
-          ));
-        }
-      }
-    }
-
-    if (chunks.isEmpty && rawMarkdown.trim().isNotEmpty) {
-      chunks.add(MarkdownPageChunk(
+    if (rawChunks.isEmpty && rawMarkdown.trim().isNotEmpty) {
+      rawChunks.add(MarkdownPageChunk(
         pageNumber: 1,
         content: rawMarkdown.trim(),
       ));
     }
 
-    return chunks;
+    // Subdivide oversized chunks (> 80 lines) into natural page chunks honoring headers
+    final List<MarkdownPageChunk> finalChunks = [];
+
+    for (int cIdx = 0; cIdx < rawChunks.length; cIdx++) {
+      final chunk = rawChunks[cIdx];
+      final lines = chunk.content.split('\n');
+
+      if (lines.length <= 80) {
+        finalChunks.add(chunk);
+        continue;
+      }
+
+      final List<String> currentLines = [];
+      int subPage = chunk.pageNumber;
+      bool inCodeBlock = false;
+      bool inMathBlock = false;
+
+      for (int lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        final line = lines[lineIdx];
+        final trimmed = line.trim();
+
+        if (trimmed.startsWith('```')) {
+          inCodeBlock = !inCodeBlock;
+        } else if (trimmed.startsWith(r'$$') && !trimmed.endsWith(r'$$') && trimmed.length > 2) {
+          inMathBlock = !inMathBlock;
+        } else if (trimmed == r'$$') {
+          inMathBlock = !inMathBlock;
+        }
+
+        currentLines.add(line);
+
+        if (!inCodeBlock && !inMathBlock) {
+          final count = currentLines.length;
+          final nextLine = (lineIdx + 1 < lines.length) ? lines[lineIdx + 1].trim() : '';
+
+          bool shouldSplit = false;
+          if (count >= 30 && nextLine.startsWith('# ')) {
+            shouldSplit = true;
+          } else if (count >= 45 && nextLine.startsWith('## ')) {
+            shouldSplit = true;
+          } else if (count >= 60 && nextLine.startsWith('### ')) {
+            shouldSplit = true;
+          } else if (count >= 80) {
+            shouldSplit = true;
+          }
+
+          if (shouldSplit) {
+            final text = currentLines.join('\n').trim();
+            if (text.isNotEmpty) {
+              finalChunks.add(MarkdownPageChunk(
+                pageNumber: subPage++,
+                content: text,
+              ));
+              currentLines.clear();
+            }
+          }
+        }
+      }
+
+      if (currentLines.isNotEmpty) {
+        final text = currentLines.join('\n').trim();
+        if (text.isNotEmpty) {
+          finalChunks.add(MarkdownPageChunk(
+            pageNumber: subPage,
+            content: text,
+          ));
+        }
+      }
+    }
+
+    return finalChunks;
   }
 
   String _recombineChunks(List<MarkdownPageChunk> chunks) {
@@ -1471,7 +1514,17 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                   child: MarkdownBody(
                     data: displayContent,
                     selectable: false,
+                    softLineBreak: true,
                     extensionSet: _latexExtensionSet,
+                    sizedImageBuilder: (config) {
+                      return _MarkdownImageWidget(
+                        uri: config.uri,
+                        title: config.title,
+                        alt: config.alt,
+                        docId: widget.document.id,
+                        isDark: isDark,
+                      );
+                    },
                     builders: {
                       'annobadge': _AnnotationBadgeElementBuilder(
                         annotationsById: annosById,
@@ -2216,3 +2269,393 @@ class _AnnotationBadgeElementBuilder extends MarkdownElementBuilder {
     );
   }
 }
+
+class _MarkdownImageWidget extends StatefulWidget {
+  final Uri uri;
+  final String? title;
+  final String? alt;
+  final String docId;
+  final bool isDark;
+
+  const _MarkdownImageWidget({
+    required this.uri,
+    this.title,
+    this.alt,
+    required this.docId,
+    required this.isDark,
+  });
+
+  @override
+  State<_MarkdownImageWidget> createState() => _MarkdownImageWidgetState();
+}
+
+class _MarkdownImageWidgetState extends State<_MarkdownImageWidget> {
+  Uint8List? _localBytes;
+  bool _isLoading = true;
+  bool _hasError = false;
+  String? _networkUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadImage();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MarkdownImageWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.uri != widget.uri || oldWidget.docId != widget.docId) {
+      _loadImage();
+    }
+  }
+
+  Future<void> _loadImage() async {
+    setState(() {
+      _isLoading = true;
+      _hasError = false;
+    });
+
+    try {
+      final uriStr = widget.uri.toString();
+
+      // 1. Data URL (Base64)
+      if (uriStr.startsWith('data:image/')) {
+        final commaIdx = uriStr.indexOf(',');
+        if (commaIdx != -1) {
+          final base64Str = uriStr.substring(commaIdx + 1);
+          final bytes = base64Decode(base64Str);
+          if (mounted) {
+            setState(() {
+              _localBytes = bytes;
+              _isLoading = false;
+            });
+          }
+          return;
+        }
+      }
+
+      // 2. Local cache check
+      final rawPath = widget.uri.path;
+      final fileName = rawPath.split('/').last.split(r'\').last;
+      if (fileName.isNotEmpty && widget.docId.isNotEmpty) {
+        final cachedBytes = await DocCacheService().getImage(widget.docId, fileName);
+        if (cachedBytes != null && cachedBytes.isNotEmpty) {
+          if (mounted) {
+            setState(() {
+              _localBytes = cachedBytes;
+              _isLoading = false;
+            });
+          }
+          return;
+        }
+      }
+
+      // 3. Network URL / Remote API URL
+      if (widget.uri.scheme == 'http' || widget.uri.scheme == 'https') {
+        _networkUrl = uriStr;
+      } else {
+        if (!mounted) return;
+        final docProvider = context.read<DocumentProvider>();
+        final baseUrl = docProvider.apiService.baseUrl;
+        _networkUrl = '$baseUrl/api/documents/${widget.docId}/images/$fileName';
+      }
+
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _hasError = true;
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  void _openImageViewer() {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.85),
+      builder: (dialogCtx) => _MarkdownImageViewerDialog(
+        localBytes: _localBytes,
+        networkUrl: _networkUrl,
+        title: widget.title ?? widget.alt,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = widget.isDark;
+    final captionText = widget.title ?? widget.alt ?? '';
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 16),
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: _openImageViewer,
+              child: Container(
+                constraints: const BoxConstraints(
+                  maxWidth: 720,
+                  maxHeight: 560,
+                ),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                    width: 1,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.06),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    if (_isLoading)
+                      Container(
+                        height: 200,
+                        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                        child: const Center(
+                          child: SizedBox(
+                            width: 28,
+                            height: 28,
+                            child: CircularProgressIndicator(strokeWidth: 2.5),
+                          ),
+                        ),
+                      )
+                    else if (_hasError)
+                      _buildErrorWidget(isDark)
+                    else if (_localBytes != null)
+                      Image.memory(
+                        _localBytes!,
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, _, _) => _buildErrorWidget(isDark),
+                      )
+                    else if (_networkUrl != null)
+                      Image.network(
+                        _networkUrl!,
+                        fit: BoxFit.contain,
+                        loadingBuilder: (context, child, loadingProgress) {
+                          if (loadingProgress == null) return child;
+                          return Container(
+                            height: 200,
+                            color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                            child: Center(
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                value: loadingProgress.expectedTotalBytes != null
+                                    ? loadingProgress.cumulativeBytesLoaded /
+                                        loadingProgress.expectedTotalBytes!
+                                    : null,
+                              ),
+                            ),
+                          );
+                        },
+                        errorBuilder: (_, _, _) => _buildErrorWidget(isDark),
+                      )
+                    else
+                      _buildErrorWidget(isDark),
+
+                    // Hover/tap subtle hint icon overlay
+                    Positioned(
+                      right: 8,
+                      bottom: 8,
+                      child: Container(
+                        padding: const EdgeInsets.all(5),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Icon(
+                          Icons.fullscreen_rounded,
+                          size: 16,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (captionText.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 600),
+              child: Text(
+                captionText.trim(),
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontStyle: FontStyle.italic,
+                  color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorWidget(bool isDark) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+      color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.broken_image_outlined,
+            size: 36,
+            color: isDark ? Colors.grey.shade500 : Colors.grey.shade400,
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '图片加载失败 (${widget.uri.path.split('/').last})',
+            style: TextStyle(
+              fontSize: 12,
+              color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            ),
+            icon: const Icon(Icons.refresh_rounded, size: 14),
+            label: const Text('重试', style: TextStyle(fontSize: 12)),
+            onPressed: _loadImage,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MarkdownImageViewerDialog extends StatefulWidget {
+  final Uint8List? localBytes;
+  final String? networkUrl;
+  final String? title;
+
+  const _MarkdownImageViewerDialog({
+    this.localBytes,
+    this.networkUrl,
+    this.title,
+  });
+
+  @override
+  State<_MarkdownImageViewerDialog> createState() => _MarkdownImageViewerDialogState();
+}
+
+class _MarkdownImageViewerDialogState extends State<_MarkdownImageViewerDialog> {
+  final TransformationController _transformController = TransformationController();
+
+  void _resetZoom() {
+    _transformController.value = Matrix4.identity();
+  }
+
+  @override
+  void dispose() {
+    _transformController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.all(16),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Interactive Pan & Zoom viewer
+          InteractiveViewer(
+            transformationController: _transformController,
+            minScale: 0.5,
+            maxScale: 6.0,
+            boundaryMargin: const EdgeInsets.all(80),
+            child: widget.localBytes != null
+                ? Image.memory(
+                    widget.localBytes!,
+                    fit: BoxFit.contain,
+                  )
+                : widget.networkUrl != null
+                    ? Image.network(
+                        widget.networkUrl!,
+                        fit: BoxFit.contain,
+                      )
+                    : const SizedBox.shrink(),
+          ),
+
+          // Top action bar
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withValues(alpha: 0.7),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+              child: Row(
+                children: [
+                  if (widget.title != null && widget.title!.isNotEmpty)
+                    Expanded(
+                      child: Text(
+                        widget.title!,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    )
+                  else
+                    const Spacer(),
+                  IconButton(
+                    tooltip: '重置缩放',
+                    icon: const Icon(Icons.restart_alt_rounded, color: Colors.white),
+                    onPressed: _resetZoom,
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    tooltip: '关闭',
+                    icon: const Icon(Icons.close_rounded, color: Colors.white),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+

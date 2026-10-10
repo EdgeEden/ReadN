@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 
 import '../../../theme/app_theme.dart';
+import 'markdown_html_support.dart';
 
 /// Interactive Widget for inline and display LaTeX math formulas.
 /// Supports hover affordance, 1-click LaTeX source copy, fluorescent highlighting, and note annotations.
@@ -101,8 +102,10 @@ class _InteractiveLatexViewState extends State<InteractiveLatexView> {
       }
     }
 
+    final normalizedLatex = normalizeLatexFormula(widget.rawLatex);
+
     final mathWidget = Math.tex(
-      widget.rawLatex,
+      normalizedLatex,
       mathStyle: widget.isDisplay ? MathStyle.display : MathStyle.text,
       textStyle: TextStyle(
         color: widget.textColor,
@@ -664,7 +667,7 @@ class _LatexFencedBlockWidgetState extends State<LatexFencedBlockWidget> {
                           child: SingleChildScrollView(
                             scrollDirection: Axis.horizontal,
                             child: Math.tex(
-                              widget.rawLatex,
+                              normalizeLatexFormula(widget.rawLatex),
                               mathStyle: MathStyle.display,
                               textStyle: TextStyle(
                                 color: widget.textColor,
@@ -790,7 +793,7 @@ void showLatexActionDialog({
                         child: SingleChildScrollView(
                           scrollDirection: Axis.horizontal,
                           child: Math.tex(
-                            rawLatex,
+                            normalizeLatexFormula(rawLatex),
                             mathStyle: isDisplay ? MathStyle.display : MathStyle.text,
                             textStyle: TextStyle(
                               color: textColor,

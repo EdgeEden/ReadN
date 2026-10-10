@@ -132,11 +132,24 @@ async def test_full_backend_flow():
         assert reverted_doc["id"] == doc_id
         assert reverted_doc["ocr_status"] == "none"
 
-        # 11. Clean up / Delete Document
+        # 11. Test Document Image Upload & Download
+        fake_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+        img_files = {"file": ("test_img.png", io.BytesIO(fake_png), "image/png")}
+        upload_img_res = await client.post(f"/api/documents/{doc_id}/images/test_img.png", files=img_files)
+        assert upload_img_res.status_code == 200
+
+        get_img_res = await client.get(f"/api/documents/{doc_id}/images/test_img.png")
+        assert get_img_res.status_code == 200
+        assert get_img_res.content == fake_png
+        assert get_img_res.headers["content-type"] == "image/png"
+
+        # 12. Clean up / Delete Document
         res = await client.delete(f"/api/documents/{doc_id}")
         assert res.status_code == 204
 
-        # Verify Document 404
+        # Verify Document 404 & Image 404
         res = await client.get(f"/api/documents/{doc_id}")
         assert res.status_code == 404
+        res_img = await client.get(f"/api/documents/{doc_id}/images/test_img.png")
+        assert res_img.status_code == 404
 

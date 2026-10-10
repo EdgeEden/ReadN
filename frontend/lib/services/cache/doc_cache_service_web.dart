@@ -18,6 +18,7 @@ class DocCacheServiceWeb implements DocCacheService {
   Future<void>? _initFuture;
 
   // L1 In-Memory Cache for 0ms same-session instant response
+  static const int _maxInMemoryBytes = 15 * 1024 * 1024;
   final Map<String, Uint8List> _pdfMemoryCache = {};
   final Map<String, String> _pdfMetaCache = {};
   final Map<String, String> _mdMemoryCache = {};
@@ -101,8 +102,10 @@ class DocCacheServiceWeb implements DocCacheService {
 
   @override
   Future<void> savePdf(String docId, Uint8List bytes, {String? checksum}) async {
-    // 1. Update L1 Memory Cache
-    _pdfMemoryCache[docId] = bytes;
+    // 1. Update L1 Memory Cache (only for files <= 15MB to prevent Web tab OOM)
+    if (bytes.length <= _maxInMemoryBytes) {
+      _pdfMemoryCache[docId] = bytes;
+    }
     if (checksum != null && checksum.isNotEmpty) {
       _pdfMetaCache[docId] = checksum;
     }
@@ -177,7 +180,9 @@ class DocCacheServiceWeb implements DocCacheService {
       final bytes = _jsValueToUint8List(pdfRes);
 
       if (bytes != null && bytes.isNotEmpty) {
-        _pdfMemoryCache[docId] = bytes;
+        if (bytes.length <= _maxInMemoryBytes) {
+          _pdfMemoryCache[docId] = bytes;
+        }
         return bytes;
       }
     } catch (e) {
@@ -290,9 +295,34 @@ class DocCacheServiceWeb implements DocCacheService {
     return null;
   }
 
+  final Map<String, Uint8List> _imagesMemoryCache = {};
+
+  @override
+  Future<void> saveImage(String docId, String imageName, Uint8List bytes) async {
+    final cleanName = imageName.split('/').last;
+    _imagesMemoryCache['${docId}_$cleanName'] = bytes;
+  }
+
+  @override
+  Future<Uint8List?> getImage(String docId, String imageName) async {
+    final cleanName = imageName.split('/').last;
+    return _imagesMemoryCache['${docId}_$cleanName'];
+  }
+
+  @override
+  Future<String?> getImagePath(String docId, String imageName) async {
+    return null;
+  }
+
+  @override
+  Future<void> deleteImages(String docId) async {
+    _imagesMemoryCache.removeWhere((k, v) => k.startsWith('${docId}_'));
+  }
+
   @override
   Future<void> deleteMarkdown(String docId) async {
     _mdMemoryCache.remove(docId);
+    await deleteImages(docId);
 
     try {
       final db = await _getDb();
@@ -310,6 +340,7 @@ class DocCacheServiceWeb implements DocCacheService {
     _pdfMemoryCache.clear();
     _pdfMetaCache.clear();
     _mdMemoryCache.clear();
+    _imagesMemoryCache.clear();
 
     try {
       final db = await _getDb();

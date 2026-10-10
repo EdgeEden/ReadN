@@ -26,3 +26,5 @@ CORS_ORIGINS = [
     "http://127.0.0.1:8080",
 ]
 
+
+APP_VERSION = "1.1.1"

@@ -572,6 +572,7 @@ class _AiCardSummaryDialogState extends State<AiCardSummaryDialog> {
                               ? _contentController.text.trim()
                               : '*（等待生成或内容为空）*',
                           selectable: true,
+                          softLineBreak: true,
                           extensionSet: md.ExtensionSet(
                             md.ExtensionSet.gitHubFlavored.blockSyntaxes,
                             [

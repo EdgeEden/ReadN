@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../../config/app_version.dart';
 import '../../../providers/document_provider.dart';
 import '../../../services/storage_service.dart';
 
@@ -154,6 +155,29 @@ class _ServerSettingsDialogState extends State<ServerSettingsDialog> {
                     }
                   },
                   child: const Text('保存并同步'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Divider(height: 1, color: Theme.of(context).dividerColor.withValues(alpha: 0.4)),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  AppVersion.fullDisplay,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w500,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55),
+                  ),
+                ),
+                Text(
+                  '构建日期: ${AppVersion.releaseDate}',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.4),
+                  ),
                 ),
               ],
             ),

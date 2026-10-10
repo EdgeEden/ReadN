@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../models/document_model.dart';
 import '../../../providers/document_provider.dart';
 import '../../../services/ocr/client_ocr_service.dart';
+import '../../../services/ocr/mineru_ocr_service.dart';
 
 class OcrDialog extends StatefulWidget {
   final DocumentModel document;
@@ -28,35 +29,51 @@ class OcrDialog extends StatefulWidget {
 }
 
 class _OcrDialogState extends State<OcrDialog> {
-  String _pageScope = "current"; // "current" | "all" | "custom"
+  // Engine selection: 'mineru' (default) | 'paddleocr_vl'
+  String _engine = "mineru";
+
+  // Scope: 'current' | 'all' | 'custom'
+  String _pageScope = "current";
   late TextEditingController _customPagesController;
-  
-  // Execution channel: 'client' (Direct) or 'server' (Backend Cloud)
-  // On Web, restricted to 'server' due to browser CORS
+
+  // Execution channel: 'client' (Direct) | 'server' (Backend Cloud)
   String _executionChannel = kIsWeb ? "server" : "client";
   bool _isCancelled = false;
 
-  // Baidu PaddleOCR-VL configuration
-  late TextEditingController _apiTokenController;
+  // Advanced Options Drawer
+  bool _showAdvanced = false;
+
+  // MinerU Configurations
+  late TextEditingController _mineruTokenController;
+  String _mineruModelVersion = "vlm"; // "vlm" | "pipeline"
+  String _mineruLanguage = "auto"; // "auto", "ch", "en", "ja", "ko", etc.
+  bool _enableFormula = true;
+  bool _enableTable = true;
+  bool _ossAccelerate = true;
+
+  // Baidu PaddleOCR Configurations (Legacy support)
+  late TextEditingController _baiduTokenController;
   bool _useDocOrientationClassify = false;
   bool _useDocUnwarping = false;
-  bool _useChartRecognition = false;
-  bool _showBaiduConfig = false;
+  final bool _useChartRecognition = false;
 
+  // Processing State & Progress Metrics
   bool _isProcessing = false;
   double _progress = 0.0;
-  int _currentRecognizedPage = 0;
+  String _phase = "idle";
+  double _uploadSpeedMbS = 0.0;
   int _totalTargetPages = 0;
   String _statusMessage = "";
   String? _errorMessage;
   Timer? _pollTimer;
 
-  static const String _defaultBaiduToken = "REDACTED_BAIDU_TOKEN";
+
+  static const String _defaultMineruToken = MineruOcrService.defaultMineruToken;
+  static const String _defaultBaiduToken = ClientOcrService.defaultBaiduToken;
 
   @override
   void initState() {
     super.initState();
-    // If document has no text layer at all, default to recognizing all pages
     if (!widget.document.hasTextLayer) {
       _pageScope = "all";
     } else {
@@ -64,16 +81,15 @@ class _OcrDialogState extends State<OcrDialog> {
     }
 
     _customPagesController = TextEditingController(text: "${widget.currentPage}");
-    _apiTokenController = TextEditingController(text: _defaultBaiduToken);
+    _mineruTokenController = TextEditingController(text: _defaultMineruToken);
+    _baiduTokenController = TextEditingController(text: _defaultBaiduToken);
 
-    if (!kIsWeb) {
-      _loadPreferences();
-    }
+    _loadPreferences();
 
     if (widget.document.ocrStatus == "processing") {
       _isProcessing = true;
       _progress = 0.1;
-      _statusMessage = "OCR 解析中...";
+      _statusMessage = "Markdown 解析任务正在运行...";
       _startPolling();
     }
   }
@@ -81,28 +97,42 @@ class _OcrDialogState extends State<OcrDialog> {
   Future<void> _loadPreferences() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      final savedEngine = prefs.getString('pref_ocr_engine');
+      if (savedEngine != null && mounted) {
+        setState(() => _engine = savedEngine);
+      }
       final savedChannel = prefs.getString('pref_ocr_channel');
-      if (savedChannel != null && !kIsWeb) {
-        if (mounted) setState(() => _executionChannel = savedChannel);
+      if (savedChannel != null && !kIsWeb && mounted) {
+        setState(() => _executionChannel = savedChannel);
       }
-      final savedToken = prefs.getString('pref_baidu_ocr_token');
-      if (savedToken != null && savedToken.trim().isNotEmpty) {
-        if (mounted) setState(() => _apiTokenController.text = savedToken.trim());
+      final savedMineruToken = prefs.getString('pref_mineru_token');
+      if (savedMineruToken != null && savedMineruToken.trim().isNotEmpty && mounted) {
+        setState(() => _mineruTokenController.text = savedMineruToken.trim());
+      }
+      final savedBaiduToken = prefs.getString('pref_baidu_ocr_token');
+      if (savedBaiduToken != null && savedBaiduToken.trim().isNotEmpty && mounted) {
+        setState(() => _baiduTokenController.text = savedBaiduToken.trim());
+      }
+      final savedModel = prefs.getString('pref_mineru_model');
+      if (savedModel != null && mounted) {
+        setState(() => _mineruModelVersion = savedModel);
+      }
+      final savedLang = prefs.getString('pref_mineru_lang');
+      if (savedLang != null && mounted) {
+        setState(() => _mineruLanguage = savedLang);
       }
     } catch (_) {}
   }
 
-  Future<void> _saveChannelPreference(String channel) async {
+  Future<void> _savePreferences() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('pref_ocr_channel', channel);
-    } catch (_) {}
-  }
-
-  Future<void> _saveTokenPreference(String token) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('pref_baidu_ocr_token', token);
+      await prefs.setString('pref_ocr_engine', _engine);
+      await prefs.setString('pref_ocr_channel', _executionChannel);
+      await prefs.setString('pref_mineru_token', _mineruTokenController.text.trim());
+      await prefs.setString('pref_baidu_ocr_token', _baiduTokenController.text.trim());
+      await prefs.setString('pref_mineru_model', _mineruModelVersion);
+      await prefs.setString('pref_mineru_lang', _mineruLanguage);
     } catch (_) {}
   }
 
@@ -111,19 +141,17 @@ class _OcrDialogState extends State<OcrDialog> {
     _isCancelled = true;
     _pollTimer?.cancel();
     _customPagesController.dispose();
-    _apiTokenController.dispose();
+    _mineruTokenController.dispose();
+    _baiduTokenController.dispose();
     super.dispose();
   }
 
   List<int>? _parseTargetPages() {
-    if (_pageScope == "all") {
-      return null;
-    }
+    if (_pageScope == "all") return null;
     if (_pageScope == "current") {
       return [widget.currentPage.clamp(1, max(1, widget.document.pageCount))];
     }
-    
-    // Parse custom range e.g. "1, 3, 5-8"
+
     final text = _customPagesController.text.trim();
     if (text.isEmpty) return [widget.currentPage];
 
@@ -157,26 +185,29 @@ class _OcrDialogState extends State<OcrDialog> {
     return pages.toList()..sort();
   }
 
-  void _startOcr() {
+  void _startConversion() {
+    _savePreferences();
     if (!kIsWeb && _executionChannel == "client") {
-      _startClientOcr();
+      _startClientConversion();
     } else {
-      _startServerOcr();
+      _startServerConversion();
     }
   }
 
-  Future<void> _startClientOcr() async {
+  Future<void> _startClientConversion() async {
     final targets = _parseTargetPages();
     final targetCount = targets?.length ?? widget.document.pageCount;
 
     setState(() {
       _isProcessing = true;
       _progress = 0.05;
+      _phase = "preparing";
+      _uploadSpeedMbS = 0.0;
       _totalTargetPages = targetCount;
-      _currentRecognizedPage = 0;
-      _statusMessage = "正在读取 PDF 文档数据...";
+      _statusMessage = "正在准备 PDF 文档数据...";
       _errorMessage = null;
     });
+
 
     widget.onOcrStarted?.call();
 
@@ -184,7 +215,7 @@ class _OcrDialogState extends State<OcrDialog> {
       final docProvider = context.read<DocumentProvider>();
       Uint8List? pdfBytes;
 
-      // 1. Try local cache first
+      // 1. Cache-first check
       final cachedBytes = await docProvider.docCacheService.getPdf(
         widget.document.id,
         expectedChecksum: widget.document.checksum,
@@ -192,9 +223,8 @@ class _OcrDialogState extends State<OcrDialog> {
       if (cachedBytes != null && cachedBytes.isNotEmpty) {
         pdfBytes = cachedBytes;
       } else {
-        // 2. Fetch from server if not cached locally
         if (mounted) {
-          setState(() => _statusMessage = "正在从服务器加载 PDF 文档...");
+          setState(() => _statusMessage = "正在从服务器读取 PDF 文档...");
         }
         final fileUrl = '${docProvider.apiService.baseUrl}/api/documents/${widget.document.id}/file';
         final res = await http.get(Uri.parse(fileUrl));
@@ -209,12 +239,12 @@ class _OcrDialogState extends State<OcrDialog> {
       }
 
       if (pdfBytes == null || pdfBytes.isEmpty) {
-        throw Exception("未能获取 PDF 文档字节流，请检查网络或文档是否存在");
+        throw Exception("未能获取 PDF 文档字节流，请检查网络连接");
       }
 
       if (_isCancelled || !mounted) return;
 
-      // 3. Get existing markdown (if any) to preserve other pages
+      // 2. Fetch existing markdown
       String? existingMd;
       final cachedMd = await docProvider.docCacheService.getMarkdown(widget.document.id);
       if (cachedMd != null && cachedMd.isNotEmpty) {
@@ -226,37 +256,74 @@ class _OcrDialogState extends State<OcrDialog> {
         }
       }
 
-      final token = _apiTokenController.text.trim().isNotEmpty
-          ? _apiTokenController.text.trim()
-          : _defaultBaiduToken;
-      _saveTokenPreference(token);
+      String mergedMarkdown = "";
 
-      final clientOcr = ClientOcrService();
-      final mergedMarkdown = await clientOcr.executeClientOcr(
-        fullPdfBytes: pdfBytes,
-        totalDocPages: widget.document.pageCount,
-        targetPages: targets,
-        apiToken: token,
-        useDocOrientationClassify: _useDocOrientationClassify,
-        useDocUnwarping: _useDocUnwarping,
-        useChartRecognition: _useChartRecognition,
-        existingMarkdown: existingMd,
-        onProgress: (prog, msg, currP, totalP) {
-          if (!mounted || _isCancelled) return;
-          setState(() {
-            _progress = prog;
-            _statusMessage = msg;
-            _currentRecognizedPage = currP;
-            if (totalP > 0) _totalTargetPages = totalP;
-          });
-        },
-        isCancelled: () => _isCancelled || !mounted,
-      );
+      if (_engine == "mineru") {
+        final mineruService = MineruOcrService();
+        final token = _mineruTokenController.text.trim().isNotEmpty
+            ? _mineruTokenController.text.trim()
+            : _defaultMineruToken;
+
+        mergedMarkdown = await mineruService.executeMineruOcr(
+          fullPdfBytes: pdfBytes,
+          totalDocPages: widget.document.pageCount,
+          targetPages: targets,
+          docId: widget.document.id,
+          apiService: docProvider.apiService,
+          apiToken: token,
+          modelVersion: _mineruModelVersion,
+          language: _mineruLanguage,
+          enableFormula: _enableFormula,
+          enableTable: _enableTable,
+          ossAccelerate: _ossAccelerate,
+          existingMarkdown: existingMd,
+          onProgress: (prog, msg, phase, speed, currP, totalP) {
+            if (!mounted || _isCancelled) return;
+            setState(() {
+              _progress = prog;
+              _statusMessage = msg;
+              _phase = phase;
+              _uploadSpeedMbS = speed;
+              if (totalP > 0) _totalTargetPages = totalP;
+            });
+
+          },
+          isCancelled: () => _isCancelled || !mounted,
+        );
+      } else {
+        final clientOcr = ClientOcrService();
+        final token = _baiduTokenController.text.trim().isNotEmpty
+            ? _baiduTokenController.text.trim()
+            : _defaultBaiduToken;
+
+        mergedMarkdown = await clientOcr.executeClientOcr(
+          fullPdfBytes: pdfBytes,
+          totalDocPages: widget.document.pageCount,
+          targetPages: targets,
+          apiToken: token,
+          useDocOrientationClassify: _useDocOrientationClassify,
+          useDocUnwarping: _useDocUnwarping,
+          useChartRecognition: _useChartRecognition,
+          existingMarkdown: existingMd,
+          onProgress: (prog, msg, currP, totalP) {
+            if (!mounted || _isCancelled) return;
+            setState(() {
+              _progress = prog;
+              _statusMessage = msg;
+              _phase = "processing";
+              if (totalP > 0) _totalTargetPages = totalP;
+            });
+
+          },
+          isCancelled: () => _isCancelled || !mounted,
+        );
+      }
 
       if (_isCancelled || !mounted) return;
 
       setState(() {
         _statusMessage = "正在同步 Markdown 结果至云端服务器...";
+        _phase = "merging";
         _progress = 0.98;
       });
 
@@ -269,10 +336,11 @@ class _OcrDialogState extends State<OcrDialog> {
       setState(() {
         _isProcessing = false;
         _progress = 1.0;
-        _statusMessage = "客户端解析完成！Markdown 已同步至云端。";
+        _phase = "completed";
+        _statusMessage = "解析完成！Markdown 已同步就绪。";
       });
 
-      await Future.delayed(const Duration(milliseconds: 600));
+      await Future.delayed(const Duration(milliseconds: 500));
       if (mounted) {
         widget.onOcrCompleted();
         Navigator.of(context).pop();
@@ -281,35 +349,45 @@ class _OcrDialogState extends State<OcrDialog> {
       if (!mounted) return;
       setState(() {
         _isProcessing = false;
+        _phase = "idle";
         _errorMessage = e.toString().replaceFirst("Exception: ", "");
       });
     }
   }
 
-  void _startServerOcr() async {
+  void _startServerConversion() async {
     final targets = _parseTargetPages();
     final targetCount = targets?.length ?? widget.document.pageCount;
 
     setState(() {
       _isProcessing = true;
       _progress = 0.05;
+      _phase = "preparing";
+      _uploadSpeedMbS = 0.0;
       _totalTargetPages = targetCount;
-      _currentRecognizedPage = 0;
-      _statusMessage = "正在连接百度 AI Studio PaddleOCR-VL API...";
+      _statusMessage = _engine == "mineru"
+          ? "正在连接 MinerU VLM 服务..."
+          : "正在连接百度 AI Studio 服务...";
       _errorMessage = null;
     });
 
     widget.onOcrStarted?.call();
 
     final docProvider = context.read<DocumentProvider>();
-    final token = _apiTokenController.text.trim().isNotEmpty
-        ? _apiTokenController.text.trim()
-        : _defaultBaiduToken;
-    _saveTokenPreference(token);
-
     final success = await docProvider.triggerOcr(
       widget.document.id,
-      apiToken: token,
+      engine: _engine,
+      mineruToken: _mineruTokenController.text.trim().isNotEmpty
+          ? _mineruTokenController.text.trim()
+          : _defaultMineruToken,
+      mineruModelVersion: _mineruModelVersion,
+      mineruLanguage: _mineruLanguage,
+      enableFormula: _enableFormula,
+      enableTable: _enableTable,
+      ossAccelerate: _ossAccelerate,
+      apiToken: _baiduTokenController.text.trim().isNotEmpty
+          ? _baiduTokenController.text.trim()
+          : _defaultBaiduToken,
       pageScope: _pageScope,
       targetPages: targets,
       useDocOrientationClassify: _useDocOrientationClassify,
@@ -320,7 +398,8 @@ class _OcrDialogState extends State<OcrDialog> {
     if (!success) {
       setState(() {
         _isProcessing = false;
-        _errorMessage = docProvider.errorMessage ?? "启动 OCR 失败，请检查网络或 API Token 配置";
+        _phase = "idle";
+        _errorMessage = docProvider.errorMessage ?? "启动解析失败，请检查网络或配置";
       });
       return;
     }
@@ -331,32 +410,37 @@ class _OcrDialogState extends State<OcrDialog> {
   void _startPolling() {
     _pollTimer?.cancel();
     final docProvider = context.read<DocumentProvider>();
-    _pollTimer = Timer.periodic(const Duration(milliseconds: 800), (timer) async {
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 900), (timer) async {
       final res = await docProvider.checkOcrProgress(widget.document.id);
       final status = res['status'] as String? ?? "none";
       final prog = (res['progress'] as num?)?.toDouble() ?? 0.0;
-      final currP = (res['current_page'] as num?)?.toInt() ?? 0;
+      final phase = res['phase'] as String? ?? "processing";
+      final speed = (res['upload_speed_mb_s'] as num?)?.toDouble() ?? 0.0;
       final totalP = (res['total_pages'] as num?)?.toInt() ?? _totalTargetPages;
       final msg = res['message'] as String? ?? "";
       final err = res['error'] as String?;
+
 
       if (!mounted) return;
 
       setState(() {
         _progress = prog.clamp(0.05, 1.0);
-        _currentRecognizedPage = currP;
+        _phase = phase;
+        _uploadSpeedMbS = speed;
         if (totalP > 0) _totalTargetPages = totalP;
-        _statusMessage = msg.isNotEmpty ? msg : "正在解析排版、表格与数学公式，生成 Markdown 文档...";
+        _statusMessage = msg.isNotEmpty ? msg : "正在解析排版与数学公式，生成结构化 Markdown...";
       });
+
 
       if (status == "completed") {
         timer.cancel();
         setState(() {
           _isProcessing = false;
           _progress = 1.0;
-          _statusMessage = "OCR 解析完成！已就绪结构化 Markdown 文档。";
+          _phase = "completed";
+          _statusMessage = "Markdown 转换已完成！";
         });
-        await Future.delayed(const Duration(milliseconds: 600));
+        await Future.delayed(const Duration(milliseconds: 500));
         if (mounted) {
           widget.onOcrCompleted();
           Navigator.of(context).pop();
@@ -365,68 +449,34 @@ class _OcrDialogState extends State<OcrDialog> {
         timer.cancel();
         setState(() {
           _isProcessing = false;
-          _errorMessage = err ?? "OCR 任务未完成，请检查配置后重试";
+          _phase = "idle";
+          _errorMessage = err ?? "解析任务未完成，请检查配置后重试";
         });
       }
     });
   }
 
   Future<void> _confirmAndRevert() async {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
     final isCurrentScope = _pageScope == "current";
 
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
+        title: const Row(
           children: [
-            Container(
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                color: Colors.amber.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.history_rounded, color: Colors.amber, size: 20),
-            ),
-            const SizedBox(width: 10),
-            const Text('清除 OCR 结果', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Icon(Icons.delete_outline_rounded, color: Colors.amber, size: 22),
+            SizedBox(width: 10),
+            Text('清除 Markdown 结果', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              isCurrentScope
-                  ? '确定清除当前第 ${widget.currentPage} 页的 OCR Markdown 识别结果？'
-                  : _pageScope == "all"
-                      ? '确定清除全文档的所有 OCR Markdown 识别结果？'
-                      : '确定清除所选页面 (${_customPagesController.text}) 的 OCR 结果？',
-              style: const TextStyle(fontSize: 13, height: 1.5),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Row(
-                children: [
-                  Icon(Icons.info_outline_rounded, size: 16, color: Colors.blueAccent),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '此操作将清除生成的 Markdown 内容，您已创建的批注与原生 PDF 保持不变。',
-                      style: TextStyle(fontSize: 11, color: Colors.grey),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+        content: Text(
+          isCurrentScope
+              ? '确定清除当前第 ${widget.currentPage} 页的 Markdown 内容？'
+              : _pageScope == "all"
+                  ? '确定清除全篇文档的所有 Markdown 内容？'
+                  : '确定清除所选页面 (${_customPagesController.text}) 的 Markdown 内容？',
+          style: const TextStyle(fontSize: 13, height: 1.5),
         ),
         actions: [
           TextButton(
@@ -454,7 +504,7 @@ class _OcrDialogState extends State<OcrDialog> {
     setState(() {
       _isProcessing = true;
       _progress = 0.5;
-      _statusMessage = "正在清除 OCR 结果...";
+      _statusMessage = "正在清除 Markdown 结果...";
       _errorMessage = null;
     });
 
@@ -471,28 +521,10 @@ class _OcrDialogState extends State<OcrDialog> {
     if (success) {
       widget.onOcrCompleted();
       Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.check_circle_rounded, color: Colors.greenAccent),
-              const SizedBox(width: 8),
-              Text(
-                _pageScope == "current"
-                    ? '已清除第 ${widget.currentPage} 页 OCR Markdown'
-                    : '已清除 OCR Markdown 识别结果',
-              ),
-            ],
-          ),
-          backgroundColor: const Color(0xFF1E293B),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        ),
-      );
     } else {
       setState(() {
         _isProcessing = false;
-        _errorMessage = docProvider.errorMessage ?? "清除 OCR 结果失败";
+        _errorMessage = docProvider.errorMessage ?? "清除 Markdown 结果失败";
       });
     }
   }
@@ -503,135 +535,152 @@ class _OcrDialogState extends State<OcrDialog> {
     final isDark = theme.brightness == Brightness.dark;
 
     return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       backgroundColor: theme.cardTheme.color,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 720),
+        constraints: const BoxConstraints(maxWidth: 500, maxHeight: 680),
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(22),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Header
+              // 1. Clean Header
               Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(10),
+                    padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF4F46E5), Color(0xFF0EA5E9)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(12),
+                      color: theme.colorScheme.primary.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 22),
+                    child: Icon(Icons.auto_awesome_rounded, color: theme.colorScheme.primary, size: 20),
                   ),
-                  const SizedBox(width: 14),
+                  const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          '百度 PaddleOCR-VL 智能解析',
+                          '转换 Markdown',
                           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          'AI Studio 官方多模态引擎 • 提取排版、LaTeX 公式与结构化 Markdown',
-                          style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                          '${widget.document.title} • 共 ${widget.document.pageCount} 页',
+                          style: TextStyle(fontSize: 12, color: theme.textTheme.bodySmall?.color),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
                   ),
                   if (!_isProcessing)
                     IconButton(
-                      icon: const Icon(Icons.close_rounded, size: 20),
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      visualDensity: VisualDensity.compact,
                       onPressed: () => Navigator.of(context).pop(),
                     ),
                 ],
               ),
               const SizedBox(height: 16),
 
+              // 2. Body Area
               Flexible(
                 child: SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (!_isProcessing) ...[
-                        // 1. Feature Highlights Banner
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: isDark
-                                  ? [const Color(0xFF312E81).withValues(alpha: 0.35), const Color(0xFF1E3A8A).withValues(alpha: 0.25)]
-                                  : [const Color(0xFFEEF2FF), const Color(0xFFE0F2FE)],
+                        // Scope selection
+                        const Text('转换范围', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            ChoiceChip(
+                              label: Text('当前第 ${widget.currentPage} 页'),
+                              selected: _pageScope == "current",
+                              onSelected: (val) => setState(() => _pageScope = "current"),
                             ),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.35 : 0.25),
+                            ChoiceChip(
+                              label: Text('全篇文档 (${widget.document.pageCount}页)'),
+                              selected: _pageScope == "all",
+                              onSelected: (val) => setState(() => _pageScope = "all"),
+                            ),
+                            ChoiceChip(
+                              label: const Text('自定义页码'),
+                              selected: _pageScope == "custom",
+                              onSelected: (val) => setState(() => _pageScope = "custom"),
+                            ),
+                          ],
+                        ),
+
+                        if (_pageScope == "custom") ...[
+                          const SizedBox(height: 10),
+                          TextField(
+                            controller: _customPagesController,
+                            decoration: InputDecoration(
+                              hintText: '如: 1, 3, 5-10',
+                              labelText: '目标页码',
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                             ),
                           ),
-                          child: Column(
-                            children: [
-                              _buildFeatureRow(
-                                icon: Icons.description_outlined,
-                                color: const Color(0xFF6366F1),
-                                title: 'Markdown 结构化解析',
-                                desc: '自动提取多级标题、段落排版与 HTML 表格，支持 MD 视图阅读',
-                              ),
-                              const SizedBox(height: 8),
-                              _buildFeatureRow(
-                                icon: Icons.functions_rounded,
-                                color: const Color(0xFF0EA5E9),
-                                title: 'LaTeX 数学公式识别',
-                                desc: '精准识别行内与独立数学公式，使用 KaTeX 高清排版渲染',
-                              ),
-                              const SizedBox(height: 8),
-                              _buildFeatureRow(
-                                icon: Icons.table_chart_outlined,
-                                color: const Color(0xFF10B981),
-                                title: '表格与版面多模态理解',
-                                desc: '保留多列排版与跨行表格结构，完美兼容复杂论文与技术文档',
-                              ),
-                            ],
-                          ),
+                        ],
+                        const SizedBox(height: 16),
+
+                        // Engine selection
+                        const Text('解析引擎', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            ChoiceChip(
+                              label: const Text('MinerU 大模型 (推荐)'),
+                              avatar: const Icon(Icons.bolt_rounded, size: 15),
+                              selected: _engine == "mineru",
+                              onSelected: (val) {
+                                if (val) setState(() => _engine = "mineru");
+                              },
+                            ),
+                            ChoiceChip(
+                              label: const Text('百度 PaddleOCR'),
+                              avatar: const Icon(Icons.font_download_outlined, size: 15),
+                              selected: _engine == "paddleocr_vl",
+                              onSelected: (val) {
+                                if (val) setState(() => _engine = "paddleocr_vl");
+                              },
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 16),
 
-                        // Execution Channel Selection (Only on Native/Non-Web)
+                        // Execution channel (Desktop/Mobile only)
                         if (!kIsWeb) ...[
-                          const Text(
-                            '解析执行方式',
-                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                          ),
+                          const Text('执行通道', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                           const SizedBox(height: 8),
                           Wrap(
                             spacing: 8,
                             runSpacing: 8,
                             children: [
                               ChoiceChip(
-                                label: const Text('客户端直接解析'),
+                                label: const Text('客户端直连 (免服务器中转)'),
+                                avatar: const Icon(Icons.devices_rounded, size: 15),
                                 selected: _executionChannel == "client",
-                                avatar: const Icon(Icons.devices_rounded, size: 16),
                                 onSelected: (val) {
-                                  if (val) {
-                                    setState(() => _executionChannel = "client");
-                                    _saveChannelPreference("client");
-                                  }
+                                  if (val) setState(() => _executionChannel = "client");
                                 },
                               ),
                               ChoiceChip(
                                 label: const Text('服务器云端解析'),
+                                avatar: const Icon(Icons.cloud_outlined, size: 15),
                                 selected: _executionChannel == "server",
-                                avatar: const Icon(Icons.cloud_sync_rounded, size: 16),
                                 onSelected: (val) {
-                                  if (val) {
-                                    setState(() => _executionChannel = "server");
-                                    _saveChannelPreference("server");
-                                  }
+                                  if (val) setState(() => _executionChannel = "server");
                                 },
                               ),
                             ],
@@ -639,239 +688,250 @@ class _OcrDialogState extends State<OcrDialog> {
                           const SizedBox(height: 16),
                         ],
 
-                        // 2. Scope Selection (Full Doc, Current Page, Custom Range)
-                        const Text(
-                          '识别与解析页面范围',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            ChoiceChip(
-                              label: Text('当前第 ${widget.currentPage} 页 (单页解析)'),
-                              selected: _pageScope == "current",
-                              avatar: const Icon(Icons.article_rounded, size: 16),
-                              onSelected: (val) => setState(() => _pageScope = "current"),
-                            ),
-                            ChoiceChip(
-                              label: Text('全篇文档 (共 ${widget.document.pageCount} 页)'),
-                              selected: _pageScope == "all",
-                              avatar: const Icon(Icons.library_books_rounded, size: 16),
-                              onSelected: (val) => setState(() => _pageScope = "all"),
-                            ),
-                            ChoiceChip(
-                              label: const Text('自定义页码范围'),
-                              selected: _pageScope == "custom",
-                              avatar: const Icon(Icons.tune_rounded, size: 16),
-                              onSelected: (val) => setState(() => _pageScope = "custom"),
-                            ),
-                          ],
-                        ),
-
-                        if (_pageScope == "custom") ...[
-                          const SizedBox(height: 8),
-                          TextField(
-                            controller: _customPagesController,
-                            decoration: InputDecoration(
-                              hintText: '如: 1, 3, 5-8 (页码以逗号或连字符分隔)',
-                              labelText: '输入目标页码',
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                              helperText: '仅对指定页码执行 OCR 并合并进 Markdown，其余页面保留',
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 16),
-
-                        // 3. Baidu API Settings (Collapsible)
+                        // Advanced Options Accordion
                         InkWell(
                           borderRadius: BorderRadius.circular(8),
-                          onTap: () => setState(() => _showBaiduConfig = !_showBaiduConfig),
+                          onTap: () => setState(() => _showAdvanced = !_showAdvanced),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            padding: const EdgeInsets.symmetric(vertical: 6),
                             child: Row(
                               children: [
                                 Icon(
-                                  _showBaiduConfig ? Icons.keyboard_arrow_down_rounded : Icons.keyboard_arrow_right_rounded,
-                                  size: 20,
+                                  _showAdvanced ? Icons.keyboard_arrow_down_rounded : Icons.keyboard_arrow_right_rounded,
+                                  size: 18,
                                   color: theme.colorScheme.primary,
                                 ),
                                 const SizedBox(width: 4),
                                 Text(
-                                  '百度 AI Studio API Token 与多模态参数设置',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    color: theme.colorScheme.primary,
-                                  ),
+                                  '高级选项',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: theme.colorScheme.primary),
                                 ),
                               ],
                             ),
                           ),
                         ),
-                        if (_showBaiduConfig) ...[
+
+                        if (_showAdvanced) ...[
                           const SizedBox(height: 8),
-                          TextField(
-                            controller: _apiTokenController,
-                            decoration: InputDecoration(
-                              labelText: 'PaddleOCR-VL Bearer Token',
-                              hintText: '输入 AI Studio Access Token',
-                              suffixIcon: IconButton(
-                                icon: const Icon(Icons.restore_rounded, size: 18),
-                                tooltip: '重置为默认官方 Token',
-                                onPressed: () => setState(() => _apiTokenController.text = _defaultBaiduToken),
+                          Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: isDark ? const Color(0xFF1E293B).withValues(alpha: 0.6) : const Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: isDark ? Colors.white10 : const Color(0xFFE2E8F0),
                               ),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                             ),
-                            style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
-                          ),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 4,
-                            children: [
-                              SizedBox(
-                                width: 170,
-                                child: CheckboxListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  title: const Text('文本方向自动分类', style: TextStyle(fontSize: 12)),
-                                  value: _useDocOrientationClassify,
-                                  onChanged: (v) => setState(() => _useDocOrientationClassify = v ?? false),
-                                ),
-                              ),
-                              SizedBox(
-                                width: 170,
-                                child: CheckboxListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  title: const Text('文档形变自动矫正', style: TextStyle(fontSize: 12)),
-                                  value: _useDocUnwarping,
-                                  onChanged: (v) => setState(() => _useDocUnwarping = v ?? false),
-                                ),
-                              ),
-                              SizedBox(
-                                width: 170,
-                                child: CheckboxListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  title: const Text('图表区域识别', style: TextStyle(fontSize: 12)),
-                                  value: _useChartRecognition,
-                                  onChanged: (v) => setState(() => _useChartRecognition = v ?? false),
-                                ),
-                              ),
-                            ],
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (_engine == "mineru") ...[
+                                  // MinerU Token
+                                  TextField(
+                                    controller: _mineruTokenController,
+                                    decoration: InputDecoration(
+                                      labelText: 'MinerU API Token',
+                                      hintText: 'sk-...',
+                                      isDense: true,
+                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                                      suffixIcon: IconButton(
+                                        icon: const Icon(Icons.restore_rounded, size: 16),
+                                        tooltip: '恢复默认官方 Token',
+                                        onPressed: () => setState(() => _mineruTokenController.text = _defaultMineruToken),
+                                      ),
+                                    ),
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  const SizedBox(height: 12),
+
+                                  // Model & Language Row
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: DropdownButtonFormField<String>(
+                                          initialValue: _mineruModelVersion,
+                                          decoration: InputDecoration(
+                                            labelText: '模型版本',
+                                            isDense: true,
+                                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                                          ),
+                                          style: TextStyle(fontSize: 12, color: theme.textTheme.bodyMedium?.color),
+                                          items: const [
+                                            DropdownMenuItem(value: 'vlm', child: Text('VLM 多模态大模型')),
+                                            DropdownMenuItem(value: 'pipeline', child: Text('Pipeline 极速模型')),
+                                          ],
+                                          onChanged: (v) {
+                                            if (v != null) setState(() => _mineruModelVersion = v);
+                                          },
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: DropdownButtonFormField<String>(
+                                          initialValue: _mineruLanguage,
+                                          decoration: InputDecoration(
+                                            labelText: '识别语种',
+                                            isDense: true,
+                                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                                          ),
+                                          style: TextStyle(fontSize: 12, color: theme.textTheme.bodyMedium?.color),
+                                          items: const [
+                                            DropdownMenuItem(value: 'auto', child: Text('自动检测 (智能识别)')),
+                                            DropdownMenuItem(value: 'ch', child: Text('中文 / 多语言')),
+                                            DropdownMenuItem(value: 'en', child: Text('英文 (English)')),
+                                            DropdownMenuItem(value: 'ja', child: Text('日文 (Japanese)')),
+                                            DropdownMenuItem(value: 'ko', child: Text('韩文 (Korean)')),
+                                            DropdownMenuItem(value: 'fr', child: Text('法文 (French)')),
+                                            DropdownMenuItem(value: 'de', child: Text('德文 (German)')),
+                                            DropdownMenuItem(value: 'ru', child: Text('俄文 (Russian)')),
+                                          ],
+                                          onChanged: (v) {
+                                            if (v != null) setState(() => _mineruLanguage = v);
+                                          },
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+
+                                  const SizedBox(height: 8),
+
+                                  // Toggles
+                                  CheckboxListTile(
+                                    title: const Text('识别 LaTeX 数学公式', style: TextStyle(fontSize: 12)),
+                                    value: _enableFormula,
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    controlAffinity: ListTileControlAffinity.leading,
+                                    onChanged: (v) => setState(() => _enableFormula = v ?? true),
+                                  ),
+                                  CheckboxListTile(
+                                    title: const Text('识别表格与排版结构', style: TextStyle(fontSize: 12)),
+                                    value: _enableTable,
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    controlAffinity: ListTileControlAffinity.leading,
+                                    onChanged: (v) => setState(() => _enableTable = v ?? true),
+                                  ),
+                                  CheckboxListTile(
+                                    title: const Text('OSS 海外/全球专线传输加速 (推荐)', style: TextStyle(fontSize: 12)),
+                                    value: _ossAccelerate,
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    controlAffinity: ListTileControlAffinity.leading,
+                                    onChanged: (v) => setState(() => _ossAccelerate = v ?? true),
+                                  ),
+                                ] else ...[
+                                  // PaddleOCR Token
+                                  TextField(
+                                    controller: _baiduTokenController,
+                                    decoration: InputDecoration(
+                                      labelText: 'PaddleOCR API Token',
+                                      isDense: true,
+                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                                    ),
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  CheckboxListTile(
+                                    title: const Text('文档方向自动校正', style: TextStyle(fontSize: 12)),
+                                    value: _useDocOrientationClassify,
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    controlAffinity: ListTileControlAffinity.leading,
+                                    onChanged: (v) => setState(() => _useDocOrientationClassify = v ?? false),
+                                  ),
+                                  CheckboxListTile(
+                                    title: const Text('页面弯曲文字展平', style: TextStyle(fontSize: 12)),
+                                    value: _useDocUnwarping,
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    controlAffinity: ListTileControlAffinity.leading,
+                                    onChanged: (v) => setState(() => _useDocUnwarping = v ?? false),
+                                  ),
+                                ],
+                              ],
+                            ),
                           ),
                         ],
-                        const SizedBox(height: 12),
-
-                        // Restore / Clear OCR Option Card
+                      ] else ...[
+                        // 3. Dynamic Progress View (During Processing)
                         Container(
-                          padding: const EdgeInsets.all(12),
+                          padding: const EdgeInsets.all(18),
                           decoration: BoxDecoration(
-                            color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                            ),
+                            color: isDark ? const Color(0xFF1E293B).withValues(alpha: 0.6) : const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(12),
                           ),
-                          child: Row(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Container(
-                                padding: const EdgeInsets.all(6),
-                                decoration: BoxDecoration(
-                                  color: Colors.amber.withValues(alpha: 0.15),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: const Icon(Icons.history_rounded, size: 16, color: Colors.amber),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      '清除 OCR Markdown 识别结果',
-                                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                              Row(
+                                children: [
+                                  SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                      value: _progress > 0.05 ? _progress : null,
                                     ),
-                                    const SizedBox(height: 2),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      _phase == 'uploading'
+                                          ? '正在上传文档...'
+                                          : _phase == 'downloading'
+                                              ? '正在下载结果...'
+                                              : _phase == 'merging'
+                                                  ? '正在合并结构化文档...'
+                                                  : '正在云端智能解析...',
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                    ),
+                                  ),
+                                  Text(
+                                    '${(_progress * 100).toInt()}%',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(4),
+                                child: LinearProgressIndicator(
+                                  value: _progress,
+                                  minHeight: 6,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                _statusMessage,
+                                style: TextStyle(fontSize: 12, color: theme.textTheme.bodySmall?.color, height: 1.4),
+                              ),
+                              if (_uploadSpeedMbS > 0 && _phase == 'uploading') ...[
+                                const SizedBox(height: 6),
+                                Row(
+                                  children: [
+                                    const Icon(Icons.speed_rounded, size: 14, color: Colors.green),
+                                    const SizedBox(width: 4),
                                     Text(
-                                      _pageScope == "current"
-                                          ? '清除当前第 ${widget.currentPage} 页的 OCR Markdown 结果'
-                                          : _pageScope == "all"
-                                              ? '清除全文档的 OCR Markdown 内容'
-                                              : '清除所选范围的 OCR Markdown 结果',
-                                      style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+                                      '实时上传带宽: ${_uploadSpeedMbS.toStringAsFixed(1)} MB/s (${(_uploadSpeedMbS * 8).toStringAsFixed(1)} Mbps)',
+                                      style: const TextStyle(fontSize: 11, color: Colors.green, fontWeight: FontWeight.w500),
                                     ),
                                   ],
                                 ),
-                              ),
-                              const SizedBox(width: 8),
-                              OutlinedButton.icon(
-                                style: OutlinedButton.styleFrom(
-                                  visualDensity: VisualDensity.compact,
-                                  foregroundColor: const Color(0xFFEF4444),
-                                  side: const BorderSide(color: Color(0xFFEF4444), width: 0.8),
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                ),
-                                icon: const Icon(Icons.undo_rounded, size: 14),
-                                label: Text(
-                                  _pageScope == "current" ? '清除本页' : '清除全部',
-                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                                ),
-                                onPressed: _confirmAndRevert,
-                              ),
+                              ],
                             ],
                           ),
                         ),
-                      ] else ...[
-                        // Processing Progress Card
-                        const SizedBox(height: 12),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Flexible(
-                              child: Text(
-                                _statusMessage,
-                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              _totalTargetPages > 0 && _currentRecognizedPage > 0
-                                  ? '$_currentRecognizedPage/$_totalTargetPages页 (${(_progress * 100).toInt()}%)'
-                                  : '${(_progress * 100).toInt()}%',
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
-                                color: theme.colorScheme.primary,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: LinearProgressIndicator(
-                            value: _progress,
-                            minHeight: 8,
-                            backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.15),
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              theme.colorScheme.primary,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
                       ],
 
-                      if (_errorMessage != null)
+                      // Error message view
+                      if (_errorMessage != null) ...[
+                        const SizedBox(height: 12),
                         Container(
-                          margin: const EdgeInsets.only(top: 12),
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
                             color: Colors.red.withValues(alpha: 0.1),
@@ -880,125 +940,65 @@ class _OcrDialogState extends State<OcrDialog> {
                           ),
                           child: Row(
                             children: [
-                              const Icon(Icons.error_outline_rounded, color: Colors.red, size: 18),
+                              const Icon(Icons.error_outline_rounded, size: 18, color: Colors.redAccent),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
                                   _errorMessage!,
-                                  style: const TextStyle(color: Colors.red, fontSize: 12),
+                                  style: const TextStyle(fontSize: 12, color: Colors.redAccent),
                                 ),
                               ),
                             ],
                           ),
                         ),
+                      ],
                     ],
                   ),
                 ),
               ),
               const SizedBox(height: 16),
 
-              // Actions
+              // 4. Footer Actions
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  if (!_isProcessing)
+                  if (widget.document.hasMarkdown && !_isProcessing)
                     TextButton.icon(
-                      style: TextButton.styleFrom(
-                        foregroundColor: isDark ? Colors.grey.shade400 : Colors.grey.shade700,
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                      ),
-                      icon: const Icon(Icons.history_rounded, size: 16),
-                      label: Text(
-                        _pageScope == "current" ? '清除本页OCR' : '清除全部OCR',
-                        style: const TextStyle(fontSize: 12),
-                      ),
+                      icon: const Icon(Icons.delete_outline_rounded, size: 16),
+                      label: const Text('清除已存 MD', style: TextStyle(fontSize: 12)),
+                      style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
                       onPressed: _confirmAndRevert,
-                    )
-                  else
-                    const SizedBox(),
-                  Row(
-                    children: [
-                      if (!_isProcessing)
-                        TextButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          child: const Text('稍后再说'),
-                        ),
-                      const SizedBox(width: 8),
-                      if (!_isProcessing)
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF4F46E5),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          ),
-                          icon: const Icon(Icons.auto_awesome_rounded, size: 18),
-                          label: Text(
-                            (!kIsWeb && _executionChannel == 'client')
-                                ? (_pageScope == "current"
-                                    ? '客户端解析第 ${widget.currentPage} 页'
-                                    : '开始客户端直接解析')
-                                : (_pageScope == "current"
-                                    ? '解析第 ${widget.currentPage} 页 (提取 Markdown)'
-                                    : '开始 PaddleOCR-VL 全文解析'),
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          onPressed: _startOcr,
-                        ),
-                    ],
-                  ),
+                    ),
+                  const Spacer(),
+                  if (!_isProcessing) ...[
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('取消'),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.icon(
+                      icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                      label: const Text('开始转换'),
+                      onPressed: _startConversion,
+                    ),
+                  ] else ...[
+                    OutlinedButton(
+                      onPressed: () {
+                        _isCancelled = true;
+                        _pollTimer?.cancel();
+                        setState(() {
+                          _isProcessing = false;
+                          _errorMessage = "任务已取消";
+                        });
+                      },
+                      child: const Text('取消任务'),
+                    ),
+                  ],
                 ],
               ),
             ],
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildFeatureRow({
-    required IconData icon,
-    required Color color,
-    required String title,
-    required String desc,
-  }) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(5),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.15),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Icon(icon, size: 15, color: color),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: color,
-                ),
-              ),
-              const SizedBox(height: 1),
-              Text(
-                desc,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: Colors.grey,
-                  height: 1.3,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
     );
   }
 }

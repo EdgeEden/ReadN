@@ -1,7 +1,7 @@
 name: frontend
 description: "ReadN - High-performance cross-platform PDF Reader with Cloud Sync and Annotations"
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.1+2
 
 environment:
   sdk: ^3.13.1
@@ -24,6 +24,8 @@ dependencies:
   web: ^1.0.0
   syncfusion_flutter_pdf: ^35.1.39
   http_parser: ^4.1.2
+  archive: ^4.0.2
+
 
 dev_dependencies:
   flutter_test:

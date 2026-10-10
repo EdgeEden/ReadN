@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from app.config import HOST, PORT, CORS_ORIGINS, STATIC_DIR
+from app.config import HOST, PORT, CORS_ORIGINS, STATIC_DIR, APP_VERSION
 from app.database import init_db
 from app.routers import documents, annotations
 
@@ -20,7 +20,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="ReadN Cloud Backend",
     description="High-performance PDF cloud storage, streaming, and annotation sync API",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan
 )
 
@@ -44,7 +44,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "ReadN Backend API",
-        "version": "1.0.0"
+        "version": APP_VERSION
     }
 
 

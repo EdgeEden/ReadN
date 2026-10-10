@@ -20,5 +20,13 @@ abstract class DocCacheService {
 
   Future<void> deleteMarkdown(String docId);
 
+  Future<void> saveImage(String docId, String imageName, Uint8List bytes);
+
+  Future<Uint8List?> getImage(String docId, String imageName);
+
+  Future<String?> getImagePath(String docId, String imageName);
+
+  Future<void> deleteImages(String docId);
+
   Future<void> clearAll();
 }
