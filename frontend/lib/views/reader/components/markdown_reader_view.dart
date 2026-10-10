@@ -1103,7 +1103,9 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
 
     final zoom = settings.zoomScale.clamp(0.5, 4.0);
     final baseFontSize = 15.5 * zoom;
-    final cardMaxWidth = (880.0 * zoom).clamp(520.0, 1600.0);
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isMobile = screenWidth < 700;
+    final cardMaxWidth = isMobile ? screenWidth : (880.0 * zoom).clamp(520.0, 1600.0);
 
     return Scaffold(
       backgroundColor: canvasBg,
@@ -1198,7 +1200,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                       controller: _scrollController,
                       // ignore: deprecated_member_use
                       cacheExtent: 1200,
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                      padding: EdgeInsets.symmetric(horizontal: isMobile ? 8 : 24, vertical: isMobile ? 12 : 20),
                       itemCount: _chunks.length,
                       itemBuilder: (context, index) {
                         final chunk = _chunks[index];
@@ -1290,6 +1292,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     required double cardMaxWidth,
   }) {
     final cardKey = _cardKeys.putIfAbsent(chunk.pageNumber, () => GlobalKey());
+    final isMobile = MediaQuery.sizeOf(context).width < 700;
     final annoProvider = context.watch<AnnotationProvider>();
     final allDocAnnos = annoProvider.annotations;
 
@@ -1360,7 +1363,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
         constraints: BoxConstraints(maxWidth: cardMaxWidth),
         child: Container(
           key: cardKey,
-          margin: const EdgeInsets.only(bottom: 24),
+          margin: EdgeInsets.only(bottom: isMobile ? 16 : 24),
           decoration: BoxDecoration(
             color: cardBg,
             borderRadius: BorderRadius.circular(14),
@@ -1382,7 +1385,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
             children: [
               // Page Header Tab
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                padding: EdgeInsets.symmetric(horizontal: isMobile ? 12 : 20, vertical: 8),
                 decoration: BoxDecoration(
                   color: isDark
                       ? Colors.white.withValues(alpha: 0.03)
@@ -1524,7 +1527,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
 
               // Markdown Content for this page with responsive SelectionArea
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 22),
+                padding: EdgeInsets.symmetric(horizontal: isMobile ? 14 : 28, vertical: isMobile ? 16 : 22),
                 child: SelectionArea(
                   onSelectionChanged: (SelectedContent? content) {
                     final selText = content?.plainText.trim() ?? '';

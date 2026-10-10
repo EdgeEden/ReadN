@@ -18,6 +18,10 @@ import 'package:frontend/views/reader/components/ai_config_dialog.dart';
 import 'package:frontend/views/reader/components/markdown_html_support.dart';
 import 'package:frontend/views/reader/components/markdown_reader_view.dart';
 import 'package:frontend/views/reader/components/latex_interactive_view.dart';
+import 'package:frontend/views/reader/components/reader_bottom_bar.dart';
+import 'package:frontend/views/reader/components/reader_mobile_sheet.dart';
+import 'package:frontend/views/reader/components/reader_sidebar.dart';
+import 'package:frontend/views/reader/components/reader_top_bar.dart';
 import 'package:frontend/services/api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -1129,6 +1133,199 @@ End of page.
       expect(clean, isNot(contains('==')));
       expect(clean, contains('\$M > A_{max} / A_{N}\$'));
       expect(clean, contains('\$A_{N}\$'));
+    });
+  });
+
+  group('Mobile Reader Responsive & Bottom Bar Tests', () {
+    late SharedPreferences prefs;
+    late StorageService storage;
+    late ReaderSettingsProvider settingsProvider;
+    late AnnotationProvider annoProvider;
+
+    setUp(() async {
+      SharedPreferences.setMockInitialValues({});
+      prefs = await SharedPreferences.getInstance();
+      storage = StorageService(prefs);
+      settingsProvider = ReaderSettingsProvider(storageService: storage);
+      annoProvider = AnnotationProvider(
+        apiService: ApiService(storageService: storage),
+        storageService: storage,
+        annotationCacheService: await AnnotationCacheService.init(),
+      );
+    });
+
+    testWidgets('ReaderBottomBar renders 5 action items with correct badges and responds to taps', (tester) async {
+      ReaderSidebarTab? selectedTab;
+      bool progressOpened = false;
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider.value(value: settingsProvider),
+            ChangeNotifierProvider.value(value: annoProvider),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              bottomNavigationBar: ReaderBottomBar(
+                currentPage: 3,
+                totalPages: 10,
+                onTabSelected: (tab) => selectedTab = tab,
+                onOpenProgress: () => progressOpened = true,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('目录'), findsOneWidget);
+      expect(find.text('检索'), findsOneWidget);
+      expect(find.text('笔记'), findsOneWidget);
+      expect(find.text('AI 伴读'), findsOneWidget);
+      expect(find.text('3 / 10'), findsOneWidget);
+
+      await tester.tap(find.text('目录'));
+      await tester.pump();
+      expect(selectedTab, equals(ReaderSidebarTab.outline));
+
+      await tester.tap(find.text('AI 伴读'));
+      await tester.pump();
+      expect(selectedTab, equals(ReaderSidebarTab.aiChat));
+
+      await tester.tap(find.text('3 / 10'));
+      await tester.pump();
+      expect(progressOpened, isTrue);
+    });
+
+    testWidgets('ReaderTopBar renders compact layout without overflow at 360px mobile width', (tester) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      final doc = DocumentModel(
+        id: 'doc-mobile',
+        filename: 'mobile_test.pdf',
+        title: '这是一个超长标题用于测试移动端顶部栏防溢出能力.pdf',
+        fileSize: 1024,
+        pageCount: 20,
+        hasTextLayer: true,
+        hasMarkdown: true,
+        ocrStatus: 'completed',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        annotationCount: 0,
+      );
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider.value(value: settingsProvider),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: ReaderTopBar(
+                isMobile: true,
+                document: doc,
+                currentPage: 1,
+                totalPages: 20,
+                onJumpToPage: (_) {},
+                onZoomIn: () {},
+                onZoomOut: () {},
+                onResetZoom: () {},
+                onPrevPage: () {},
+                onNextPage: () {},
+                hasMarkdown: true,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(tester.takeException(), isNull);
+      expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+      expect(find.text('书架'), findsNothing);
+      expect(find.text('PDF'), findsOneWidget);
+      expect(find.text('MD'), findsOneWidget);
+    });
+
+    testWidgets('ReaderMobileProgressSheet displays slider, page indicators, and triggers jump', (tester) async {
+      int jumpedPage = 0;
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider.value(value: settingsProvider),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: ReaderMobileProgressSheet(
+                currentPage: 5,
+                totalPages: 20,
+                onJumpToPage: (page) => jumpedPage = page,
+                onZoomIn: () {},
+                onZoomOut: () {},
+                onResetZoom: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('第 5 页 / 共 20 页'), findsOneWidget);
+      expect(find.text('上一页'), findsOneWidget);
+      expect(find.text('下一页'), findsOneWidget);
+      expect(find.text('指定跳页'), findsOneWidget);
+
+      await tester.tap(find.text('下一页'));
+      await tester.pump();
+      expect(jumpedPage, equals(6));
+    });
+
+    testWidgets('ReaderSidebar in isMobileSheet mode displays drag handle and all 6 tabs', (tester) async {
+      final docProvider = DocumentProvider(
+        apiService: ApiService(storageService: storage),
+        storageService: storage,
+        docCacheService: DocCacheService(),
+      );
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider.value(value: settingsProvider),
+            ChangeNotifierProvider.value(value: annoProvider),
+            ChangeNotifierProvider.value(value: docProvider),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: ReaderSidebar(
+                isMobileSheet: true,
+                initialTab: ReaderSidebarTab.outline,
+                outlineItems: const [
+                  OutlineItem(title: '第一章 绪论', pageNumber: 1),
+                ],
+                searchQuery: '',
+                searchResults: const [],
+                onSearchChanged: (_) {},
+                onClearSearch: () {},
+                onJumpToPage: (_) {},
+                currentPage: 1,
+                totalPages: 10,
+                onZoomIn: () {},
+                onZoomOut: () {},
+                onResetZoom: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('目录'), findsOneWidget);
+      expect(find.text('检索'), findsOneWidget);
+      expect(find.text('高亮'), findsOneWidget);
+      expect(find.text('批注'), findsOneWidget);
+      expect(find.text('卡片'), findsOneWidget);
+      expect(find.text('AI 助手'), findsOneWidget);
+
+      expect(find.text('第一章 绪论'), findsOneWidget);
     });
   });
 }

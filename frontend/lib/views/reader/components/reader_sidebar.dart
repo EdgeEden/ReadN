@@ -38,6 +38,9 @@ class SearchResultItem {
 
 class ReaderSidebar extends StatefulWidget {
   final SidebarDockPosition position;
+  final bool isMobileSheet;
+  final ReaderSidebarTab? initialTab;
+  final VoidCallback? onClose;
   final List<OutlineItem> outlineItems;
   final bool isOutlineLoading;
   final String searchQuery;
@@ -59,7 +62,10 @@ class ReaderSidebar extends StatefulWidget {
 
   const ReaderSidebar({
     super.key,
-    required this.position,
+    this.position = SidebarDockPosition.left,
+    this.isMobileSheet = false,
+    this.initialTab,
+    this.onClose,
     required this.outlineItems,
     this.isOutlineLoading = false,
     required this.searchQuery,
@@ -89,11 +95,15 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
   final TextEditingController _annoSearchController = TextEditingController();
   final TextEditingController _outlineFilterController = TextEditingController();
   String _outlineFilterText = '';
+  ReaderSidebarTab? _mobileActiveTab;
 
   @override
   void initState() {
     super.initState();
     _localSearchController.text = widget.searchQuery;
+    if (widget.isMobileSheet) {
+      _mobileActiveTab = widget.initialTab ?? ReaderSidebarTab.outline;
+    }
   }
 
   @override
@@ -101,6 +111,11 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.searchQuery != widget.searchQuery && _localSearchController.text != widget.searchQuery) {
       _localSearchController.text = widget.searchQuery;
+    }
+    if (widget.isMobileSheet && widget.initialTab != null && widget.initialTab != oldWidget.initialTab) {
+      setState(() {
+        _mobileActiveTab = widget.initialTab;
+      });
     }
   }
 
@@ -140,6 +155,23 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
     );
   }
 
+  Widget _buildMobileDragHandle(BuildContext context, ThemeData theme, bool isDark) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+      alignment: Alignment.center,
+      child: Container(
+        width: 36,
+        height: 4,
+        decoration: BoxDecoration(
+          color: isDark ? Colors.white24 : Colors.black26,
+          borderRadius: BorderRadius.circular(2),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<ReaderSettingsProvider>();
@@ -147,41 +179,52 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
     final isDark = settings.readingMode == ReadingMode.dark;
     final isLeft = widget.position == SidebarDockPosition.left;
 
-    final dockedTabs = isLeft ? settings.leftDockedTabs : settings.rightDockedTabs;
-    final activeTab = isLeft ? settings.activeLeftTab : settings.activeRightTab;
+    final dockedTabs = widget.isMobileSheet
+        ? ReaderSidebarTab.values
+        : (isLeft ? settings.leftDockedTabs : settings.rightDockedTabs);
+    final activeTab = widget.isMobileSheet
+        ? (_mobileActiveTab ?? widget.initialTab ?? ReaderSidebarTab.outline)
+        : (isLeft ? settings.activeLeftTab : settings.activeRightTab);
 
     if (dockedTabs.isEmpty) {
       return const SizedBox.shrink();
     }
 
     return Container(
-      width: 340,
+      width: widget.isMobileSheet ? double.infinity : 340,
       decoration: BoxDecoration(
         color: theme.cardTheme.color,
-        border: Border(
-          left: !isLeft
-              ? BorderSide(
-                  color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                  width: 1,
-                )
-              : BorderSide.none,
-          right: isLeft
-              ? BorderSide(
-                  color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                  width: 1,
-                )
-              : BorderSide.none,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.05),
-            blurRadius: 14,
-            offset: Offset(isLeft ? 4 : -4, 0),
-          ),
-        ],
+        border: widget.isMobileSheet
+            ? null
+            : Border(
+                left: !isLeft
+                    ? BorderSide(
+                        color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                        width: 1,
+                      )
+                    : BorderSide.none,
+                right: isLeft
+                    ? BorderSide(
+                        color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                        width: 1,
+                      )
+                    : BorderSide.none,
+              ),
+        boxShadow: widget.isMobileSheet
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.05),
+                  blurRadius: 14,
+                  offset: Offset(isLeft ? 4 : -4, 0),
+                ),
+              ],
       ),
       child: Column(
         children: [
+          if (widget.isMobileSheet)
+            _buildMobileDragHandle(context, theme, isDark),
+
           // 1. Sidebar Tab Header
           _buildTabHeader(context, theme, isDark, isLeft, dockedTabs, activeTab, settings),
 
@@ -191,7 +234,7 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
           ),
 
           // 3. Fixed Bottom Controls (Left Sidebar Only: Page & Zoom)
-          if (isLeft)
+          if (isLeft && !widget.isMobileSheet)
             _buildLeftBottomBar(context, theme, isDark, settings),
         ],
       ),
@@ -247,7 +290,11 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
                     child: InkWell(
                       borderRadius: BorderRadius.circular(10),
                       onTap: () {
-                        if (isLeft) {
+                        if (widget.isMobileSheet) {
+                          setState(() {
+                            _mobileActiveTab = tab;
+                          });
+                        } else if (isLeft) {
                           settings.setActiveLeftTab(tab);
                         } else {
                           settings.setActiveRightTab(tab);
@@ -315,43 +362,59 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
             ),
           ),
 
-          // Dock Move Button (Move current tab to the other sidebar)
-          Tooltip(
-            message: isLeft ? '停靠到右边栏' : '停靠到左边栏',
-            child: IconButton(
-              icon: Icon(
-                isLeft ? Icons.arrow_forward_rounded : Icons.arrow_back_rounded,
-                size: 18,
-                color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+          // Dock Move Button (Move current tab to the other sidebar) - Hidden in mobile sheet mode
+          if (!widget.isMobileSheet)
+            Tooltip(
+              message: isLeft ? '停靠到右边栏' : '停靠到左边栏',
+              child: IconButton(
+                icon: Icon(
+                  isLeft ? Icons.arrow_forward_rounded : Icons.arrow_back_rounded,
+                  size: 18,
+                  color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                ),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                onPressed: () {
+                  if (isLeft) {
+                    settings.dockTabToRight(activeTab);
+                  } else {
+                    settings.dockTabToLeft(activeTab);
+                  }
+                },
               ),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-              onPressed: () {
-                if (isLeft) {
-                  settings.dockTabToRight(activeTab);
-                } else {
-                  settings.dockTabToLeft(activeTab);
-                }
-              },
             ),
-          ),
 
           // Close / Collapse Sidebar Button
-          Tooltip(
-            message: isLeft ? '收起左边栏' : '收起右边栏',
-            child: IconButton(
-              icon: const Icon(Icons.close_rounded, size: 18),
+          if (widget.isMobileSheet)
+            IconButton(
+              icon: const Icon(Icons.close_rounded, size: 20),
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              tooltip: '关闭',
               onPressed: () {
-                if (isLeft) {
-                  settings.setLeftSidebarOpen(false);
+                if (widget.onClose != null) {
+                  widget.onClose!();
                 } else {
-                  settings.setRightSidebarOpen(false);
+                  Navigator.of(context).pop();
                 }
               },
+            )
+          else
+            Tooltip(
+              message: isLeft ? '收起左边栏' : '收起右边栏',
+              child: IconButton(
+                icon: const Icon(Icons.close_rounded, size: 18),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                onPressed: () {
+                  if (isLeft) {
+                    settings.setLeftSidebarOpen(false);
+                  } else {
+                    settings.setRightSidebarOpen(false);
+                  }
+                },
+              ),
             ),
-          ),
         ],
       ),
     );

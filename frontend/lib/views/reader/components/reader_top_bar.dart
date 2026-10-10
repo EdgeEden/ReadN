@@ -24,6 +24,7 @@ class ReaderTopBar extends StatelessWidget {
   final ReaderViewMode viewMode;
   final ValueChanged<ReaderViewMode>? onViewModeChanged;
   final bool hasMarkdown;
+  final bool isMobile;
 
   const ReaderTopBar({
     super.key,
@@ -41,6 +42,7 @@ class ReaderTopBar extends StatelessWidget {
     this.viewMode = ReaderViewMode.pdf,
     this.onViewModeChanged,
     this.hasMarkdown = false,
+    this.isMobile = false,
   });
 
   @override
@@ -51,7 +53,7 @@ class ReaderTopBar extends StatelessWidget {
 
     return Container(
       height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
+      padding: EdgeInsets.symmetric(horizontal: isMobile ? 8 : 14),
       decoration: BoxDecoration(
         color: theme.appBarTheme.backgroundColor,
         border: Border(
@@ -75,7 +77,7 @@ class ReaderTopBar extends StatelessWidget {
             borderRadius: BorderRadius.circular(10),
             onTap: () => Navigator.of(context).pop(),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              padding: EdgeInsets.symmetric(horizontal: isMobile ? 8 : 10, vertical: 6),
               decoration: BoxDecoration(
                 color: theme.cardTheme.color,
                 borderRadius: BorderRadius.circular(10),
@@ -87,40 +89,44 @@ class ReaderTopBar extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(Icons.arrow_back_rounded, size: 16, color: theme.colorScheme.primary),
-                  const SizedBox(width: 4),
-                  const Text(
-                    '书架',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                  ),
+                  if (!isMobile) ...[
+                    const SizedBox(width: 4),
+                    const Text(
+                      '书架',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ],
                 ],
               ),
             ),
           ),
-          const SizedBox(width: 12),
+          SizedBox(width: isMobile ? 6 : 12),
 
           // 2. Document Title
           Expanded(
             child: Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(5),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFFEF4444), Color(0xFFF97316)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
+                if (!isMobile) ...[
+                  Container(
+                    padding: const EdgeInsets.all(5),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFEF4444), Color(0xFFF97316)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(7),
                     ),
-                    borderRadius: BorderRadius.circular(7),
+                    child: const Icon(Icons.description_rounded, color: Colors.white, size: 14),
                   ),
-                  child: const Icon(Icons.description_rounded, color: Colors.white, size: 14),
-                ),
-                const SizedBox(width: 8),
+                  const SizedBox(width: 8),
+                ],
                 Flexible(
                   child: Text(
                     document.title,
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
-                      fontSize: 14,
+                      fontSize: isMobile ? 13 : 14,
                       letterSpacing: -0.2,
                       color: theme.colorScheme.onSurface,
                     ),
@@ -131,15 +137,15 @@ class ReaderTopBar extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: isMobile ? 6 : 10),
 
           // 3. View Mode Switcher: [ 📄 PDF | 📝 MD ]
           _buildViewModeSwitcher(context, theme, isDark),
-          const SizedBox(width: 10),
+          SizedBox(width: isMobile ? 6 : 10),
 
           // 4. OCR Status & Action Button
           _buildOcrButton(context, theme, isDark),
-          const SizedBox(width: 10),
+          SizedBox(width: isMobile ? 6 : 10),
 
           // 5. Theme Switcher Menu
           PopupMenuButton<ReadingMode>(
@@ -218,7 +224,7 @@ class ReaderTopBar extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
           onTap: onOpenOcr,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            padding: EdgeInsets.symmetric(horizontal: isMobile ? 8 : 10, vertical: 6),
             decoration: BoxDecoration(
               color: const Color(0xFF10B981).withValues(alpha: isDark ? 0.18 : 0.08),
               borderRadius: BorderRadius.circular(10),
@@ -227,19 +233,21 @@ class ReaderTopBar extends StatelessWidget {
                 width: 1,
               ),
             ),
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.check_circle_rounded, size: 15, color: Color(0xFF10B981)),
-                SizedBox(width: 5),
-                Text(
-                  'MD 已就绪',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF10B981),
+                const Icon(Icons.check_circle_rounded, size: 15, color: Color(0xFF10B981)),
+                if (!isMobile) ...[
+                  const SizedBox(width: 5),
+                  const Text(
+                    'MD 已就绪',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF10B981),
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -267,7 +275,7 @@ class ReaderTopBar extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
           onTap: onOpenOcr,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+            padding: EdgeInsets.symmetric(horizontal: isMobile ? 7 : 9, vertical: 5),
             decoration: BoxDecoration(
               color: const Color(0xFF4F46E5).withValues(alpha: isDark ? 0.25 : 0.12),
               borderRadius: BorderRadius.circular(10),
@@ -291,7 +299,7 @@ class ReaderTopBar extends StatelessWidget {
                 ),
                 const SizedBox(width: 5),
                 Text(
-                  progressLabel,
+                  isMobile ? '$progPercent%' : progressLabel,
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
@@ -312,7 +320,7 @@ class ReaderTopBar extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
           onTap: onOpenOcr,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+            padding: EdgeInsets.symmetric(horizontal: isMobile ? 8 : 9, vertical: 6),
             decoration: BoxDecoration(
               color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.04),
               borderRadius: BorderRadius.circular(10),
@@ -329,15 +337,17 @@ class ReaderTopBar extends StatelessWidget {
                   size: 14,
                   color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                 ),
-                const SizedBox(width: 4),
-                Text(
-                  '提取MD',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
+                if (!isMobile) ...[
+                  const SizedBox(width: 4),
+                  Text(
+                    '提取MD',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -351,7 +361,7 @@ class ReaderTopBar extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         onTap: onOpenOcr,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          padding: EdgeInsets.symmetric(horizontal: isMobile ? 8 : 10, vertical: 6),
           decoration: BoxDecoration(
             gradient: const LinearGradient(
               colors: [Color(0xFF4F46E5), Color(0xFF0EA5E9)],
@@ -369,11 +379,13 @@ class ReaderTopBar extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(Icons.auto_awesome_rounded, size: 15, color: Colors.white),
-              const SizedBox(width: 4),
-              Text(
-                document.ocrStatus == 'failed' ? 'OCR 重试' : 'OCR 解析',
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
-              ),
+              if (!isMobile) ...[
+                const SizedBox(width: 4),
+                Text(
+                  document.ocrStatus == 'failed' ? 'OCR 重试' : 'OCR 解析',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                ),
+              ],
             ],
           ),
         ),

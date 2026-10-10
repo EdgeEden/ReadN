@@ -20,6 +20,8 @@ import 'components/markdown_reader_view.dart';
 import 'components/note_editor_dialog.dart';
 import 'components/ocr_dialog.dart';
 import 'components/page_jump_dialog.dart';
+import 'components/reader_bottom_bar.dart';
+import 'components/reader_mobile_sheet.dart';
 import 'components/reader_sidebar.dart';
 import 'components/reader_top_bar.dart';
 
@@ -74,6 +76,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   String _searchQuery = '';
   List<SearchResultItem> _searchResults = [];
   bool _isSearching = false;
+  bool _isImmersiveMode = false;
 
   @override
   void initState() {
@@ -429,6 +432,50 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       _saveCurrentPage(page);
       _markdownKey.currentState?.jumpToPage(page);
     }
+  }
+
+  void _openMobileSheet(BuildContext context, ReaderSidebarTab tab) {
+    ReaderMobileBottomSheet.show(
+      context: context,
+      initialTab: tab,
+      outlineItems: _outlineItems,
+      isOutlineLoading: _isOutlineLoading,
+      searchQuery: _searchQuery,
+      searchResults: _searchResults,
+      isSearching: _isSearching,
+      onSearchChanged: _onSearchQueryChanged,
+      onClearSearch: () => setState(() {
+        _searchQuery = '';
+        _searchResults = [];
+      }),
+      onJumpToPage: _onJumpToPage,
+      currentPage: _currentPage,
+      totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+      documentTitle: _doc.title,
+      docId: _doc.id,
+      onGetPageContext: _getPageContext,
+      onZoomIn: _handleZoomIn,
+      onZoomOut: _handleZoomOut,
+      onResetZoom: _handleResetZoom,
+      onFitWidth: _handleFitWidth,
+      onDeleteAnnotation: _handleDeleteAnnotation,
+    );
+  }
+
+  void _openMobileProgressSheet(BuildContext context) {
+    final totalP = _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1);
+    ReaderMobileProgressSheet.show(
+      context: context,
+      currentPage: _currentPage,
+      totalPages: totalP,
+      onJumpToPage: _onJumpToPage,
+      onZoomIn: _handleZoomIn,
+      onZoomOut: _handleZoomOut,
+      onResetZoom: _handleResetZoom,
+      onFitWidth: _handleFitWidth,
+      isMarkdownMode: _viewMode == ReaderViewMode.markdown,
+      onToggleImmersive: () => setState(() => _isImmersiveMode = !_isImmersiveMode),
+    );
   }
 
   // -------------------------------------------------------------
@@ -1211,178 +1258,240 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       pdfFilter = AppTheme.sepiaPdfColorFilter;
     }
 
-    return Theme(
-      data: activeTheme,
-      child: Scaffold(
-        backgroundColor: canvasBg,
-        body: SafeArea(
-          child: Column(
-            children: [
-              // Top Bar
-              ReaderTopBar(
-                document: _doc,
-                ocrProgress: _ocrStatusInfo,
-                currentPage: _currentPage,
-                totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
-                onJumpToPage: _onJumpToPage,
-                onOpenOcr: _showOcrDialog,
-                viewMode: _viewMode,
-                onViewModeChanged: _onViewModeChanged,
-                hasMarkdown: _doc.hasMarkdown || (_markdownContent != null && _markdownContent!.trim().isNotEmpty),
-                onZoomIn: _handleZoomIn,
-                onZoomOut: _handleZoomOut,
-                onResetZoom: _handleResetZoom,
-                onPrevPage: () {
-                  if (_currentPage > 1) {
-                    _onJumpToPage(_currentPage - 1);
-                  }
-                },
-                onNextPage: () {
-                  if (_currentPage < _totalPages) {
-                    _onJumpToPage(_currentPage + 1);
-                  }
-                },
-              ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 700;
 
-              // Scanned / Image PDF OCR Banner
-              if (_viewMode == ReaderViewMode.pdf && !_doc.hasTextLayer && _doc.ocrStatus != 'completed' && _doc.ocrStatus != 'processing' && !_isOcrBannerDismissed)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF4F46E5).withValues(alpha: isDark ? 0.25 : 0.08),
-                    border: Border(
-                      bottom: BorderSide(
-                        color: const Color(0xFF4F46E5).withValues(alpha: 0.25),
-                      ),
-                    ),
-                  ),
-                  child: Row(
+        return Theme(
+          data: activeTheme,
+          child: Scaffold(
+            backgroundColor: canvasBg,
+            bottomNavigationBar: isMobile && !_isImmersiveMode
+                ? ReaderBottomBar(
+                    currentPage: _currentPage,
+                    totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                    onTabSelected: (tab) => _openMobileSheet(context, tab),
+                    onOpenProgress: () => _openMobileProgressSheet(context),
+                    isMarkdownMode: _viewMode == ReaderViewMode.markdown,
+                  )
+                : null,
+            body: SafeArea(
+              top: !_isImmersiveMode,
+              bottom: !_isImmersiveMode,
+              child: Stack(
+                children: [
+                  Column(
                     children: [
-                      const Icon(Icons.auto_fix_high_rounded, color: Color(0xFF818CF8), size: 18),
-                      const SizedBox(width: 10),
-                      const Expanded(
-                        child: Text(
-                          '提示：当前为扫描版/纯图片 PDF。可使用百度 PaddleOCR-VL 提取结构化 Markdown、数学公式与表格排版！',
-                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                      // Top Bar
+                      if (!_isImmersiveMode)
+                        ReaderTopBar(
+                          isMobile: isMobile,
+                          document: _doc,
+                          ocrProgress: _ocrStatusInfo,
+                          currentPage: _currentPage,
+                          totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                          onJumpToPage: _onJumpToPage,
+                          onOpenOcr: _showOcrDialog,
+                          viewMode: _viewMode,
+                          onViewModeChanged: _onViewModeChanged,
+                          hasMarkdown: _doc.hasMarkdown || (_markdownContent != null && _markdownContent!.trim().isNotEmpty),
+                          onZoomIn: _handleZoomIn,
+                          onZoomOut: _handleZoomOut,
+                          onResetZoom: _handleResetZoom,
+                          onPrevPage: () {
+                            if (_currentPage > 1) {
+                              _onJumpToPage(_currentPage - 1);
+                            }
+                          },
+                          onNextPage: () {
+                            if (_currentPage < _totalPages) {
+                              _onJumpToPage(_currentPage + 1);
+                            }
+                          },
                         ),
-                      ),
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                          visualDensity: VisualDensity.compact,
+
+                      // Scanned / Image PDF OCR Banner
+                      if (_viewMode == ReaderViewMode.pdf && !_doc.hasTextLayer && _doc.ocrStatus != 'completed' && _doc.ocrStatus != 'processing' && !_isOcrBannerDismissed && !_isImmersiveMode)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF4F46E5).withValues(alpha: isDark ? 0.25 : 0.08),
+                            border: Border(
+                              bottom: BorderSide(
+                                color: const Color(0xFF4F46E5).withValues(alpha: 0.25),
+                              ),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.auto_fix_high_rounded, color: Color(0xFF818CF8), size: 18),
+                              const SizedBox(width: 10),
+                              const Expanded(
+                                child: Text(
+                                  '提示：当前为扫描版/纯图片 PDF。可使用百度 PaddleOCR-VL 提取结构化 Markdown、数学公式与表格排版！',
+                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                                ),
+                              ),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                  textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                                icon: const Icon(Icons.auto_awesome_rounded, size: 16),
+                                label: const Text('OCR 提取 Markdown'),
+                                onPressed: _showOcrDialog,
+                              ),
+                              const SizedBox(width: 8),
+                              IconButton(
+                                icon: const Icon(Icons.close_rounded, size: 16),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                tooltip: '关闭提示',
+                                onPressed: () => setState(() => _isOcrBannerDismissed = true),
+                              ),
+                            ],
+                          ),
                         ),
-                        icon: const Icon(Icons.auto_awesome_rounded, size: 16),
-                        label: const Text('OCR 提取 Markdown'),
-                        onPressed: _showOcrDialog,
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        icon: const Icon(Icons.close_rounded, size: 16),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        tooltip: '关闭提示',
-                        onPressed: () => setState(() => _isOcrBannerDismissed = true),
+
+                      // Main Viewer & Flexible Sidebars (Left / Main / Right)
+                      Expanded(
+                        child: Row(
+                          children: [
+                            // 1. Left Sidebar (Desktop & Tablet only: !isMobile)
+                            if (!isMobile) ...[
+                              if (settings.isLeftSidebarOpen && settings.leftDockedTabs.isNotEmpty)
+                                ReaderSidebar(
+                                  position: SidebarDockPosition.left,
+                                  outlineItems: _outlineItems,
+                                  isOutlineLoading: _isOutlineLoading,
+                                  searchQuery: _searchQuery,
+                                  searchResults: _searchResults,
+                                  isSearching: _isSearching,
+                                  onSearchChanged: _onSearchQueryChanged,
+                                  onClearSearch: () => setState(() {
+                                    _searchQuery = '';
+                                    _searchResults = [];
+                                  }),
+                                  onJumpToPage: _onJumpToPage,
+                                  currentPage: _currentPage,
+                                  totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                                  documentTitle: _doc.title,
+                                  docId: _doc.id,
+                                  onGetPageContext: _getPageContext,
+                                  onZoomIn: _handleZoomIn,
+                                  onZoomOut: _handleZoomOut,
+                                  onResetZoom: _handleResetZoom,
+                                  onFitWidth: _handleFitWidth,
+                                  onDeleteAnnotation: _handleDeleteAnnotation,
+                                )
+                              else
+                                _buildCollapsedRail(SidebarDockPosition.left, settings, isDark, activeTheme),
+                            ],
+
+                            // 2. Main Document Viewer Body (IndexedStack preserves viewer state & page layout across switches)
+                            Expanded(
+                              child: IndexedStack(
+                                index: _viewMode == ReaderViewMode.pdf ? 0 : 1,
+                                children: [
+                                  Stack(
+                                    children: [
+                                      if (_isLoadingPdf)
+                                        Center(
+                                          child: _buildPdfLoadingWidget(activeTheme, isDark),
+                                        )
+                                      else if (_loadError != null)
+                                        Center(
+                                          child: _buildPdfErrorWidget(_loadError!, _fetchPdfData, activeTheme),
+                                        )
+                                      else if ((_useUriSource && _pdfUri != null) || _pdfBytes != null)
+                                        _buildPdfViewer(canvasBg, pdfFilter, isDark),
+                                    ],
+                                  ),
+                                  if (_hasActivatedMarkdown)
+                                    _buildMarkdownContent(context, activeTheme, isDark)
+                                  else
+                                    const SizedBox.shrink(),
+                                ],
+                              ),
+                            ),
+
+                            // 3. Right Sidebar (Desktop & Tablet only: !isMobile)
+                            if (!isMobile) ...[
+                              if (settings.isRightSidebarOpen && settings.rightDockedTabs.isNotEmpty)
+                                ReaderSidebar(
+                                  position: SidebarDockPosition.right,
+                                  outlineItems: _outlineItems,
+                                  isOutlineLoading: _isOutlineLoading,
+                                  searchQuery: _searchQuery,
+                                  searchResults: _searchResults,
+                                  isSearching: _isSearching,
+                                  onSearchChanged: _onSearchQueryChanged,
+                                  onClearSearch: () => setState(() {
+                                    _searchQuery = '';
+                                    _searchResults = [];
+                                  }),
+                                  onJumpToPage: _onJumpToPage,
+                                  currentPage: _currentPage,
+                                  totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                                  documentTitle: _doc.title,
+                                  docId: _doc.id,
+                                  onGetPageContext: _getPageContext,
+                                  onZoomIn: _handleZoomIn,
+                                  onZoomOut: _handleZoomOut,
+                                  onResetZoom: _handleResetZoom,
+                                  onFitWidth: _handleFitWidth,
+                                  onDeleteAnnotation: _handleDeleteAnnotation,
+                                )
+                              else if (!settings.isRightSidebarOpen && settings.rightDockedTabs.isNotEmpty)
+                                _buildCollapsedRail(SidebarDockPosition.right, settings, isDark, activeTheme),
+                            ],
+                          ],
+                        ),
                       ),
                     ],
                   ),
-                ),
 
-              // Main Viewer & Flexible Sidebars (Left / Main / Right)
-              Expanded(
-                child: Row(
-                  children: [
-                    // 1. Left Sidebar
-                    if (settings.isLeftSidebarOpen && settings.leftDockedTabs.isNotEmpty)
-                      ReaderSidebar(
-                        position: SidebarDockPosition.left,
-                        outlineItems: _outlineItems,
-                        isOutlineLoading: _isOutlineLoading,
-                        searchQuery: _searchQuery,
-                        searchResults: _searchResults,
-                        isSearching: _isSearching,
-                        onSearchChanged: _onSearchQueryChanged,
-                        onClearSearch: () => setState(() {
-                          _searchQuery = '';
-                          _searchResults = [];
-                        }),
-                        onJumpToPage: _onJumpToPage,
-                        currentPage: _currentPage,
-                        totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
-                        documentTitle: _doc.title,
-                        docId: _doc.id,
-                        onGetPageContext: _getPageContext,
-                        onZoomIn: _handleZoomIn,
-                        onZoomOut: _handleZoomOut,
-                        onResetZoom: _handleResetZoom,
-                        onFitWidth: _handleFitWidth,
-                        onDeleteAnnotation: _handleDeleteAnnotation,
-                      )
-                    else
-                      _buildCollapsedRail(SidebarDockPosition.left, settings, isDark, activeTheme),
-
-                    // 2. Main Document Viewer Body (IndexedStack preserves viewer state & page layout across switches)
-                    Expanded(
-                      child: IndexedStack(
-                        index: _viewMode == ReaderViewMode.pdf ? 0 : 1,
-                        children: [
-                          Stack(
-                            children: [
-                              if (_isLoadingPdf)
-                                Center(
-                                  child: _buildPdfLoadingWidget(activeTheme, isDark),
-                                )
-                              else if (_loadError != null)
-                                Center(
-                                  child: _buildPdfErrorWidget(_loadError!, _fetchPdfData, activeTheme),
-                                )
-                              else if ((_useUriSource && _pdfUri != null) || _pdfBytes != null)
-                                _buildPdfViewer(canvasBg, pdfFilter, isDark),
-                            ],
+                  // Floating exit immersion button on mobile
+                  if (isMobile && _isImmersiveMode)
+                    Positioned(
+                      bottom: 24,
+                      right: 20,
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(20),
+                          onTap: () => setState(() => _isImmersiveMode = false),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: (isDark ? Colors.black87 : Colors.white).withValues(alpha: 0.9),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+                              ),
+                              boxShadow: const [
+                                BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 2)),
+                              ],
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.fullscreen_exit_rounded, size: 16, color: activeTheme.colorScheme.primary),
+                                const SizedBox(width: 4),
+                                const Text('退出沉浸', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                              ],
+                            ),
                           ),
-                          if (_hasActivatedMarkdown)
-                            _buildMarkdownContent(context, activeTheme, isDark)
-                          else
-                            const SizedBox.shrink(),
-                        ],
+                        ),
                       ),
                     ),
-
-                    // 3. Right Sidebar
-                    if (settings.isRightSidebarOpen && settings.rightDockedTabs.isNotEmpty)
-                      ReaderSidebar(
-                        position: SidebarDockPosition.right,
-                        outlineItems: _outlineItems,
-                        isOutlineLoading: _isOutlineLoading,
-                        searchQuery: _searchQuery,
-                        searchResults: _searchResults,
-                        isSearching: _isSearching,
-                        onSearchChanged: _onSearchQueryChanged,
-                        onClearSearch: () => setState(() {
-                          _searchQuery = '';
-                          _searchResults = [];
-                        }),
-                        onJumpToPage: _onJumpToPage,
-                        currentPage: _currentPage,
-                        totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
-                        documentTitle: _doc.title,
-                        docId: _doc.id,
-                        onGetPageContext: _getPageContext,
-                        onZoomIn: _handleZoomIn,
-                        onZoomOut: _handleZoomOut,
-                        onResetZoom: _handleResetZoom,
-                        onFitWidth: _handleFitWidth,
-                        onDeleteAnnotation: _handleDeleteAnnotation,
-                      )
-                    else if (!settings.isRightSidebarOpen && settings.rightDockedTabs.isNotEmpty)
-                      _buildCollapsedRail(SidebarDockPosition.right, settings, isDark, activeTheme),
-                  ],
-                ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
