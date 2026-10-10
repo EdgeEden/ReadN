@@ -155,17 +155,30 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
     );
   }
 
-  Widget _buildMobileDragHandle(BuildContext context, ThemeData theme, bool isDark) {
+  Widget _buildMobileDragHandle(BuildContext context, ThemeData theme, bool isDark, bool isSepia) {
+    Color handleBg;
+    Color barColor;
+    if (isDark) {
+      handleBg = const Color(0xFF1E293B);
+      barColor = Colors.white24;
+    } else if (isSepia) {
+      handleBg = const Color(0xFFF4ECD8);
+      barColor = const Color(0x40B45309);
+    } else {
+      handleBg = const Color(0xFFF8FAFC);
+      barColor = Colors.black26;
+    }
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 8),
-      color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+      color: handleBg,
       alignment: Alignment.center,
       child: Container(
         width: 36,
         height: 4,
         decoration: BoxDecoration(
-          color: isDark ? Colors.white24 : Colors.black26,
+          color: barColor,
           borderRadius: BorderRadius.circular(2),
         ),
       ),
@@ -177,6 +190,7 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
     final settings = context.watch<ReaderSettingsProvider>();
     final theme = Theme.of(context);
     final isDark = settings.readingMode == ReadingMode.dark;
+    final isSepia = settings.readingMode == ReadingMode.sepia;
     final isLeft = widget.position == SidebarDockPosition.left;
 
     final dockedTabs = widget.isMobileSheet
@@ -190,6 +204,10 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
       return const SizedBox.shrink();
     }
 
+    final borderColor = isDark
+        ? const Color(0xFF334155)
+        : (isSepia ? const Color(0xFFD6C8AF) : const Color(0xFFE2E8F0));
+
     return Container(
       width: widget.isMobileSheet ? double.infinity : 340,
       decoration: BoxDecoration(
@@ -199,13 +217,13 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
             : Border(
                 left: !isLeft
                     ? BorderSide(
-                        color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                        color: borderColor,
                         width: 1,
                       )
                     : BorderSide.none,
                 right: isLeft
                     ? BorderSide(
-                        color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                        color: borderColor,
                         width: 1,
                       )
                     : BorderSide.none,
@@ -223,10 +241,10 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
       child: Column(
         children: [
           if (widget.isMobileSheet)
-            _buildMobileDragHandle(context, theme, isDark),
+            _buildMobileDragHandle(context, theme, isDark, isSepia),
 
           // 1. Sidebar Tab Header
-          _buildTabHeader(context, theme, isDark, isLeft, dockedTabs, activeTab, settings),
+          _buildTabHeader(context, theme, isDark, isSepia, isLeft, dockedTabs, activeTab, settings),
 
           // 2. Active Tab Body
           Expanded(
@@ -235,7 +253,7 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
 
           // 3. Fixed Bottom Controls (Left Sidebar Only: Page & Zoom)
           if (isLeft && !widget.isMobileSheet)
-            _buildLeftBottomBar(context, theme, isDark, settings),
+            _buildLeftBottomBar(context, theme, isDark, isSepia, settings),
         ],
       ),
     );
@@ -245,6 +263,7 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
     BuildContext context,
     ThemeData theme,
     bool isDark,
+    bool isSepia,
     bool isLeft,
     List<ReaderSidebarTab> dockedTabs,
     ReaderSidebarTab activeTab,
@@ -252,13 +271,26 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
   ) {
     final annoProvider = context.watch<AnnotationProvider>();
 
+    Color headerBg;
+    Color headerBorder;
+    if (isDark) {
+      headerBg = const Color(0xFF1E293B);
+      headerBorder = const Color(0xFF334155);
+    } else if (isSepia) {
+      headerBg = const Color(0xFFF4ECD8);
+      headerBorder = const Color(0xFFD6C8AF);
+    } else {
+      headerBg = const Color(0xFFF8FAFC);
+      headerBorder = const Color(0xFFE2E8F0);
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+        color: headerBg,
         border: Border(
           bottom: BorderSide(
-            color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+            color: headerBorder,
             width: 1,
           ),
         ),
@@ -1226,17 +1258,31 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
     BuildContext context,
     ThemeData theme,
     bool isDark,
+    bool isSepia,
     ReaderSettingsProvider settings,
   ) {
     final totalPages = widget.totalPages > 0 ? widget.totalPages : 1;
 
+    Color barBg;
+    Color barBorder;
+    if (isDark) {
+      barBg = const Color(0xFF1E293B);
+      barBorder = const Color(0xFF334155);
+    } else if (isSepia) {
+      barBg = const Color(0xFFF4ECD8);
+      barBorder = const Color(0xFFD6C8AF);
+    } else {
+      barBg = const Color(0xFFF8FAFC);
+      barBorder = const Color(0xFFE2E8F0);
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+        color: barBg,
         border: Border(
           top: BorderSide(
-            color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+            color: barBorder,
             width: 1,
           ),
         ),

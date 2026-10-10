@@ -38,35 +38,43 @@ class ReaderMobileBottomSheet {
       backgroundColor: Colors.transparent,
       useSafeArea: true,
       builder: (sheetContext) {
-        return FractionallySizedBox(
-          heightFactor: 0.85,
-          child: ClipRRect(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-            child: ReaderSidebar(
-              isMobileSheet: true,
-              initialTab: initialTab,
-              outlineItems: outlineItems,
-              isOutlineLoading: isOutlineLoading,
-              searchQuery: searchQuery,
-              searchResults: searchResults,
-              isSearching: isSearching,
-              onSearchChanged: onSearchChanged,
-              onClearSearch: onClearSearch,
-              onJumpToPage: (page) {
-                Navigator.of(sheetContext).pop();
-                onJumpToPage(page);
-              },
-              currentPage: currentPage,
-              totalPages: totalPages,
-              onZoomIn: onZoomIn,
-              onZoomOut: onZoomOut,
-              onResetZoom: onResetZoom,
-              onFitWidth: onFitWidth,
-              onDeleteAnnotation: onDeleteAnnotation,
-              documentTitle: documentTitle,
-              docId: docId,
-              onGetPageContext: onGetPageContext,
-              onClose: () => Navigator.of(sheetContext).pop(),
+        final settings = sheetContext.watch<ReaderSettingsProvider>();
+        final activeTheme = settings.readingMode == ReadingMode.dark
+            ? AppTheme.darkTheme
+            : (settings.readingMode == ReadingMode.sepia ? AppTheme.sepiaTheme : AppTheme.lightTheme);
+
+        return Theme(
+          data: activeTheme,
+          child: FractionallySizedBox(
+            heightFactor: 0.85,
+            child: ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              child: ReaderSidebar(
+                isMobileSheet: true,
+                initialTab: initialTab,
+                outlineItems: outlineItems,
+                isOutlineLoading: isOutlineLoading,
+                searchQuery: searchQuery,
+                searchResults: searchResults,
+                isSearching: isSearching,
+                onSearchChanged: onSearchChanged,
+                onClearSearch: onClearSearch,
+                onJumpToPage: (page) {
+                  Navigator.of(sheetContext).pop();
+                  onJumpToPage(page);
+                },
+                currentPage: currentPage,
+                totalPages: totalPages,
+                onZoomIn: onZoomIn,
+                onZoomOut: onZoomOut,
+                onResetZoom: onResetZoom,
+                onFitWidth: onFitWidth,
+                onDeleteAnnotation: onDeleteAnnotation,
+                documentTitle: documentTitle,
+                docId: docId,
+                onGetPageContext: onGetPageContext,
+                onClose: () => Navigator.of(sheetContext).pop(),
+              ),
             ),
           ),
         );
@@ -118,16 +126,24 @@ class ReaderMobileProgressSheet extends StatefulWidget {
       backgroundColor: Colors.transparent,
       useSafeArea: true,
       builder: (ctx) {
-        return ReaderMobileProgressSheet(
-          currentPage: currentPage,
-          totalPages: totalPages,
-          onJumpToPage: onJumpToPage,
-          onZoomIn: onZoomIn,
-          onZoomOut: onZoomOut,
-          onResetZoom: onResetZoom,
-          onFitWidth: onFitWidth,
-          isMarkdownMode: isMarkdownMode,
-          onToggleImmersive: onToggleImmersive,
+        final settings = ctx.watch<ReaderSettingsProvider>();
+        final activeTheme = settings.readingMode == ReadingMode.dark
+            ? AppTheme.darkTheme
+            : (settings.readingMode == ReadingMode.sepia ? AppTheme.sepiaTheme : AppTheme.lightTheme);
+
+        return Theme(
+          data: activeTheme,
+          child: ReaderMobileProgressSheet(
+            currentPage: currentPage,
+            totalPages: totalPages,
+            onJumpToPage: onJumpToPage,
+            onZoomIn: onZoomIn,
+            onZoomOut: onZoomOut,
+            onResetZoom: onResetZoom,
+            onFitWidth: onFitWidth,
+            isMarkdownMode: isMarkdownMode,
+            onToggleImmersive: onToggleImmersive,
+          ),
         );
       },
     );
@@ -190,7 +206,11 @@ class _ReaderMobileProgressSheetState extends State<ReaderMobileProgressSheet> {
                 height: 4,
                 margin: const EdgeInsets.only(bottom: 12),
                 decoration: BoxDecoration(
-                  color: isDark ? Colors.white24 : Colors.black26,
+                  color: isDark
+                      ? Colors.white24
+                      : (settings.readingMode == ReadingMode.sepia
+                          ? const Color(0x40B45309)
+                          : Colors.black26),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),

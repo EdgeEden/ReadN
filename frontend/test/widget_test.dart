@@ -22,6 +22,8 @@ import 'package:frontend/views/reader/components/reader_bottom_bar.dart';
 import 'package:frontend/views/reader/components/reader_mobile_sheet.dart';
 import 'package:frontend/views/reader/components/reader_sidebar.dart';
 import 'package:frontend/views/reader/components/reader_top_bar.dart';
+import 'package:frontend/views/reader/components/floating_selection_bar.dart';
+import 'package:frontend/theme/app_theme.dart';
 import 'package:frontend/services/api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -1326,6 +1328,127 @@ End of page.
       expect(find.text('AI 助手'), findsOneWidget);
 
       expect(find.text('第一章 绪论'), findsOneWidget);
+    });
+
+    testWidgets('FloatingSelectionBar renders two-row layout on mobile and single-row on desktop', (WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final storage = await StorageService.init();
+      final settingsProvider = ReaderSettingsProvider(storageService: storage);
+
+      // 1. Mobile screen (360x780)
+      tester.view.physicalSize = const Size(360, 780);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: settingsProvider,
+          child: MaterialApp(
+            home: Scaffold(
+              body: Center(
+                child: FloatingSelectionBar(
+                  selectedText: 'Test selected text',
+                  isMobile: true,
+                  onHighlight: (_) {},
+                  onAddNote: () {},
+                  onDismiss: () {},
+                  onAskAi: () {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Mobile renders Column (two rows: colors + buttons separated by Divider)
+      expect(find.byType(Column), findsWidgets);
+      expect(find.byType(Divider), findsOneWidget);
+      expect(find.text('问AI'), findsOneWidget);
+      expect(find.text('批注'), findsOneWidget);
+
+      // 2. Desktop screen (1024x768)
+      tester.view.physicalSize = const Size(1024, 768);
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: settingsProvider,
+          child: MaterialApp(
+            home: Scaffold(
+              body: Center(
+                child: FloatingSelectionBar(
+                  selectedText: 'Test selected text',
+                  isMobile: false,
+                  onHighlight: (_) {},
+                  onAddNote: () {},
+                  onDismiss: () {},
+                  onAskAi: () {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Desktop does not render Divider inside FloatingSelectionBar
+      expect(find.byType(Divider), findsNothing);
+    });
+
+    testWidgets('ReaderSettingsProvider dynamic theme update test', (WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final storage = await StorageService.init();
+      final settingsProvider = ReaderSettingsProvider(storageService: storage);
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: settingsProvider,
+          child: Consumer<ReaderSettingsProvider>(
+            builder: (context, settings, _) {
+              ThemeData activeTheme;
+              switch (settings.readingMode) {
+                case ReadingMode.dark:
+                  activeTheme = AppTheme.darkTheme;
+                  break;
+                case ReadingMode.sepia:
+                  activeTheme = AppTheme.sepiaTheme;
+                  break;
+                case ReadingMode.light:
+                  activeTheme = AppTheme.lightTheme;
+                  break;
+              }
+              return MaterialApp(
+                theme: activeTheme,
+                home: Builder(
+                  builder: (ctx) {
+                    final currentTheme = Theme.of(ctx);
+                    return Scaffold(
+                      body: Text(
+                        'Current Brightness: ${currentTheme.brightness}',
+                        key: const ValueKey('theme_text'),
+                      ),
+                    );
+                  },
+                ),
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Current Brightness: Brightness.light'), findsOneWidget);
+
+      // Switch to Dark
+      settingsProvider.setReadingMode(ReadingMode.dark);
+      await tester.pumpAndSettle();
+      expect(find.text('Current Brightness: Brightness.dark'), findsOneWidget);
+
+      // Switch to Sepia
+      settingsProvider.setReadingMode(ReadingMode.sepia);
+      await tester.pumpAndSettle();
+      expect(find.text('Current Brightness: Brightness.light'), findsOneWidget);
+      expect(settingsProvider.readingMode, ReadingMode.sepia);
     });
   });
 }

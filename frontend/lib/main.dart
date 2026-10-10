@@ -75,12 +75,26 @@ class ReadNApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final mode = context.watch<ReaderSettingsProvider>().readingMode;
+    ThemeData activeTheme;
+    switch (mode) {
+      case ReadingMode.dark:
+        activeTheme = AppTheme.darkTheme;
+        break;
+      case ReadingMode.sepia:
+        activeTheme = AppTheme.sepiaTheme;
+        break;
+      case ReadingMode.light:
+        activeTheme = AppTheme.lightTheme;
+        break;
+    }
+
     return MaterialApp(
       title: 'ReadN - 云端多端 PDF 阅读器',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme,
-      darkTheme: AppTheme.darkTheme,
-      themeMode: ThemeMode.system,
+      theme: activeTheme,
+      darkTheme: activeTheme,
+      themeMode: ThemeMode.light,
       home: const BookshelfView(),
     );
   }

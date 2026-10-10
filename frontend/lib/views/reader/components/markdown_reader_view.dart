@@ -204,9 +204,11 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     required Offset pointerPos,
     required Size containerSize,
     required Widget child,
+    bool? isMobile,
   }) {
-    const double menuWidth = 380.0;
-    const double menuHeight = 48.0;
+    final bool mobile = isMobile ?? (containerSize.width < 700);
+    final double menuWidth = mobile ? 248.0 : 380.0;
+    final double menuHeight = mobile ? 86.0 : 48.0;
 
     double left = pointerPos.dx - (menuWidth / 2);
     if (left < 16) left = 16;
@@ -1043,12 +1045,14 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
       return const SizedBox.shrink();
     }
 
+    final isMobile = MediaQuery.of(context).size.width < 700;
     return AdaptiveTextSelectionToolbar(
       anchors: selectableRegionState.contextMenuAnchors,
       children: [
         FloatingSelectionBar(
           selectedText: selectedText,
           readingMode: context.read<ReaderSettingsProvider>().readingMode,
+          isMobile: isMobile,
           onHighlight: (colorHex) {
             _createHighlightFromSelection(selectedText, colorHex, pageNumber);
             selectableRegionState.hideToolbar();
@@ -1227,18 +1231,21 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
           if (_activeSelection != null)
             LayoutBuilder(
               builder: (context, constraints) {
-                return Stack(
-                  children: [
-                    _buildPositionedFloatingBar(
-                      context: context,
-                      pointerPos: _activeSelection!.position,
-                      containerSize: Size(constraints.maxWidth, constraints.maxHeight),
-                      child: Material(
-                        type: MaterialType.transparency,
-                        child: FloatingSelectionBar(
-                          selectedText: _activeSelection!.text,
-                          readingMode: settings.readingMode,
-                          onHighlight: (colorHex) {
+                  final isMobile = constraints.maxWidth < 700;
+                  return Stack(
+                    children: [
+                      _buildPositionedFloatingBar(
+                        context: context,
+                        pointerPos: _activeSelection!.position,
+                        containerSize: Size(constraints.maxWidth, constraints.maxHeight),
+                        isMobile: isMobile,
+                        child: Material(
+                          type: MaterialType.transparency,
+                          child: FloatingSelectionBar(
+                            selectedText: _activeSelection!.text,
+                            readingMode: settings.readingMode,
+                            isMobile: isMobile,
+                            onHighlight: (colorHex) {
                             final sel = _activeSelection;
                             if (sel != null) {
                               setState(() => _activeSelection = null);

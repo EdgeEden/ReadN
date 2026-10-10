@@ -805,9 +805,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     required Offset pointerPos,
     required Size containerSize,
     required Widget child,
+    bool? isMobile,
   }) {
-    const double menuWidth = 380.0;
-    const double menuHeight = 48.0;
+    final bool mobile = isMobile ?? (containerSize.width < 700);
+    final double menuWidth = mobile ? 248.0 : 380.0;
+    final double menuHeight = mobile ? 86.0 : 48.0;
 
     double left = pointerPos.dx - (menuWidth / 2);
     if (left < 16) left = 16;
@@ -1730,6 +1732,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
     return LayoutBuilder(
       builder: (viewerContext, constraints) {
+        final isMobile = constraints.maxWidth < 700;
         return Stack(
           children: [
             Listener(
@@ -1767,11 +1770,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                 context: context,
                 pointerPos: _pdfActiveSelection!.position,
                 containerSize: Size(constraints.maxWidth, constraints.maxHeight),
+                isMobile: isMobile,
                 child: Material(
                   type: MaterialType.transparency,
                   child: FloatingSelectionBar(
                     selectedText: _pdfActiveSelection!.text,
                     readingMode: settings.readingMode,
+                    isMobile: isMobile,
                     onHighlight: (colorHex) {
                       final sel = _pdfActiveSelection;
                       if (sel != null) {

@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../../config/app_version.dart';
 import '../../models/document_model.dart';
 import '../../providers/document_provider.dart';
+import '../../providers/reader_settings_provider.dart';
+import '../../theme/app_theme.dart';
 import '../reader/reader_view.dart';
 import 'components/document_card.dart';
 import 'components/server_settings_dialog.dart';
@@ -36,7 +38,9 @@ class _BookshelfViewState extends State<BookshelfView> {
   @override
   Widget build(BuildContext context) {
     final docProvider = context.watch<DocumentProvider>();
+    final readerSettings = context.watch<ReaderSettingsProvider>();
     final theme = Theme.of(context);
+    final isDark = readerSettings.readingMode == ReadingMode.dark;
     final isConnected = docProvider.isBackendConnected;
     final docs = docProvider.documents;
 
@@ -110,8 +114,8 @@ class _BookshelfViewState extends State<BookshelfView> {
               );
             },
             child: Container(
-              margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
                 color: isConnected
                     ? Colors.green.withValues(alpha: 0.1)
@@ -132,7 +136,7 @@ class _BookshelfViewState extends State<BookshelfView> {
                       shape: BoxShape.circle,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
                   Text(
                     isConnected ? '云端已连接' : '未连接云端',
                     style: TextStyle(
@@ -150,6 +154,66 @@ class _BookshelfViewState extends State<BookshelfView> {
                 ],
               ),
             ),
+          ),
+          // Theme Switcher Menu
+          PopupMenuButton<ReadingMode>(
+            tooltip: '切换阅读主题',
+            offset: const Offset(0, 44),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            icon: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: theme.cardTheme.color,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+                ),
+              ),
+              child: Icon(
+                readerSettings.readingMode == ReadingMode.dark
+                    ? Icons.dark_mode_rounded
+                    : readerSettings.readingMode == ReadingMode.sepia
+                        ? Icons.menu_book_rounded
+                        : Icons.light_mode_rounded,
+                size: 16,
+                color: readerSettings.readingMode == ReadingMode.sepia
+                    ? const Color(0xFFD97706)
+                    : theme.colorScheme.primary,
+              ),
+            ),
+            onSelected: (mode) => readerSettings.setReadingMode(mode),
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: ReadingMode.light,
+                child: Row(
+                  children: [
+                    Icon(Icons.light_mode_rounded, color: Color(0xFF4F46E5), size: 18),
+                    SizedBox(width: 10),
+                    Text('明亮日间模式'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: ReadingMode.sepia,
+                child: Row(
+                  children: [
+                    Icon(Icons.menu_book_rounded, color: Color(0xFFD97706), size: 18),
+                    SizedBox(width: 10),
+                    Text('羊皮纸护眼模式'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: ReadingMode.dark,
+                child: Row(
+                  children: [
+                    Icon(Icons.dark_mode_rounded, color: Color(0xFF818CF8), size: 18),
+                    SizedBox(width: 10),
+                    Text('深色夜间模式'),
+                  ],
+                ),
+              ),
+            ],
           ),
           IconButton(
             tooltip: '刷新文档库',

@@ -14,7 +14,7 @@ void main() {
       final container = Container(
         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
         decoration: BoxDecoration(
-          color: Colors.yellow.withOpacity(0.3),
+          color: Colors.yellow.withValues(alpha: 0.3),
           borderRadius: BorderRadius.circular(6),
           border: Border.all(color: Colors.yellow),
         ),
@@ -71,8 +71,6 @@ void main() {
     final fullPlainText = textWidget.textSpan?.toPlainText() ?? '';
     expect(fullPlainText, contains('选择'));
     expect(fullPlainText, contains('影响最小化'));
-    print('SUCCESS: Verified Wrap has exactly 1 merged Text widget!');
-    print('Plain text: $fullPlainText');
   });
 }
 
