@@ -73,7 +73,7 @@ def run_paddleocr_vl_ocr_sync(
     output_path: Optional[str] = None,
     markdown_path: Optional[str] = None,
     target_pages: Optional[List[int]] = None,
-    api_token: str = "REDACTED_BAIDU_TOKEN",
+    api_token: Optional[str] = None,
     api_url: str = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
     model_name: str = "PaddleOCR-VL-1.6",
     optional_payload: Optional[Dict[str, Any]] = None,
@@ -126,9 +126,15 @@ def run_paddleocr_vl_ocr_sync(
                 pass
 
     # 2. Submit Job to PaddleOCR-VL API
-    token_clean = (api_token or "").strip()
+    token_clean = (api_token or os.getenv("BAIDU_OCR_TOKEN", "")).strip()
     if token_clean.lower().startswith("bearer "):
         token_clean = token_clean[7:].strip()
+
+    if not token_clean:
+        if progress_callback:
+            progress_callback(0.0, "未配置百度飞桨 API Token，请先在设置中填写或配置环境变量", phase="error")
+        logger.error("Baidu OCR Token is not configured.")
+        return False
         
     headers = {
         "Authorization": f"bearer {token_clean}",
@@ -390,7 +396,7 @@ def run_mineru_ocr_sync(
     input_path: str,
     markdown_path: Optional[str] = None,
     target_pages: Optional[List[int]] = None,
-    api_token: str = "REDACTED_MINERU_TOKEN",
+    api_token: Optional[str] = None,
     model_version: str = "vlm",
     language: str = "auto",
     enable_formula: bool = True,
@@ -402,9 +408,15 @@ def run_mineru_ocr_sync(
     """
     执行 MinerU API v4 结构化 Markdown 解析 (支持海外/全球 OSS 专线传输加速与静默自动分片合并)。
     """
-    token_clean = (api_token or "").strip()
+    token_clean = (api_token or os.getenv("MINERU_API_TOKEN", "")).strip()
     if token_clean.lower().startswith("bearer "):
         token_clean = token_clean[7:].strip()
+
+    if not token_clean:
+        if progress_callback:
+            progress_callback(0.0, "未配置 MinerU API Token，请先在高级选项中填写或配置环境变量", phase="error")
+        logger.error("MinerU API Token is not configured.")
+        return False
 
     headers = {
         "Authorization": f"Bearer {token_clean}",
@@ -710,7 +722,7 @@ def run_ocr_sync_dispatcher(
             input_path=input_path,
             markdown_path=str(Path(input_path).with_suffix(".md")),
             target_pages=target_pages,
-            api_token=ocr_req.mineru_token or "REDACTED_MINERU_TOKEN",
+            api_token=ocr_req.mineru_token or None,
             model_version=ocr_req.mineru_model_version or "vlm",
             language=ocr_req.mineru_language or "auto",
             enable_formula=ocr_req.enable_formula,
@@ -724,7 +736,7 @@ def run_ocr_sync_dispatcher(
             input_path=input_path,
             markdown_path=str(Path(input_path).with_suffix(".md")),
             target_pages=target_pages,
-            api_token=ocr_req.api_token or "REDACTED_BAIDU_TOKEN",
+            api_token=ocr_req.api_token or None,
             api_url=ocr_req.api_url or "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
             model_name=ocr_req.model_name or "PaddleOCR-VL-1.6",
             optional_payload={

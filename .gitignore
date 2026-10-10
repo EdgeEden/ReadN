@@ -1,3 +1,10 @@
+# Environment & Secrets Backups
+.env*
+*.env
+SECRETS_BACKUP*
+local_keys.*
+replace_secrets.txt
+
 # Binaries & Archives
 *.tar.gz
 *.zip

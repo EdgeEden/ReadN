@@ -80,6 +80,37 @@ graph LR
 
 ---
 
+## 🔑 凭据与 API Key 配置指南 (API Key Configuration)
+
+为了保障您的数据私密与资金安全，**ReadN 开源仓库不包含任何硬编码密钥或云端服务器地址**。所有 API Key 均采用**客户端本地存储 (Local Storage) 或服务端环境变量**管理：
+
+### 1. AI 伴读大模型 API Key（用于侧边栏对话、划词提问与思维链推理）
+ReadN 原生兼容 OpenAI 标准 API 规范，支持国内外主流大语言模型：
+- **DeepSeek (强烈推荐)**：访问 [DeepSeek 开放平台](https://platform.deepseek.com) 注册并创建 API Key，畅享 DeepSeek-V3 与 DeepSeek-R1 深度推理模型。
+- **硅基流动 (SiliconFlow)**：访问 [SiliconFlow 平台](https://cloud.siliconflow.cn) 获取 API Key，享受高速云端模型聚合。
+- **OpenAI**：访问 [OpenAI Platform](https://platform.openai.com/api-keys) 获取 API Key。
+- **Moonshot (Kimi)**：访问 [Moonshot 开放平台](https://platform.moonshot.cn) 获取 API Key。
+
+> **配置方式**：在阅读界面点击右上角 **AI 设置 (⚙️)**，填入对应的 API Key 与模型名称。Key 仅保存在您本机的浏览器缓存或本地设备中，绝不上传至任何中间服务器。
+
+### 2. MinerU 智能 PDF 转 Markdown API Token（用于论文/公式/图表精准提取）
+- **获取方式**：访问 [MinerU 官方开放平台 (mineru.net)](https://mineru.net)，注册登录后进入“API 接口”页面创建并获取您的专属 Token。
+- **配置方式**：
+  - **客户端配置**：在阅读界面点击“转换为 Markdown”，展开**【高级选项】**，在输入框填入您的 MinerU Token 即可（客户端会自动记住供后续使用）。
+  - **服务端配置**：若搭建私有化后端，可在启动时设置环境变量：
+    ```bash
+    export MINERU_API_TOKEN="your_mineru_token_here"
+    ```
+
+### 3. 百度飞桨 PaddleOCR Token（备用 OCR 引擎）
+- **获取方式**：访问 [百度飞桨 AI Studio (aistudio.baidu.com)](https://aistudio.baidu.com) 申请 API 访问 Token。
+- **配置方式**：在转换弹窗的高级选项中填入，或在服务端设置环境变量 `export BAIDU_OCR_TOKEN="your_token_here"`。
+
+### 4. 后端服务器地址配置
+客户端默认连接本地开发地址 `http://localhost:18903`。若您部署了远程专属服务器，可在主界面右上角**设置 -> 服务器连接**中填入您的服务器地址与端口。
+
+---
+
 ## 🚀 快速上手 (Quick Start)
 
 ### 1. 环境准备

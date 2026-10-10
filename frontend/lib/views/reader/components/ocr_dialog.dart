@@ -260,9 +260,10 @@ class _OcrDialogState extends State<OcrDialog> {
 
       if (_engine == "mineru") {
         final mineruService = MineruOcrService();
-        final token = _mineruTokenController.text.trim().isNotEmpty
-            ? _mineruTokenController.text.trim()
-            : _defaultMineruToken;
+        final token = _mineruTokenController.text.trim();
+        if (token.isEmpty) {
+          throw Exception("请在下方【高级选项】中填写 MinerU API Token（可在 mineru.net 免费申请）");
+        }
 
         mergedMarkdown = await mineruService.executeMineruOcr(
           fullPdfBytes: pdfBytes,
@@ -292,9 +293,10 @@ class _OcrDialogState extends State<OcrDialog> {
         );
       } else {
         final clientOcr = ClientOcrService();
-        final token = _baiduTokenController.text.trim().isNotEmpty
-            ? _baiduTokenController.text.trim()
-            : _defaultBaiduToken;
+        final token = _baiduTokenController.text.trim();
+        if (token.isEmpty) {
+          throw Exception("请在下方【高级选项】中填写百度飞桨 API Token（可在 aistudio.baidu.com 获取）");
+        }
 
         mergedMarkdown = await clientOcr.executeClientOcr(
           fullPdfBytes: pdfBytes,
@@ -377,17 +379,13 @@ class _OcrDialogState extends State<OcrDialog> {
     final success = await docProvider.triggerOcr(
       widget.document.id,
       engine: _engine,
-      mineruToken: _mineruTokenController.text.trim().isNotEmpty
-          ? _mineruTokenController.text.trim()
-          : _defaultMineruToken,
+      mineruToken: _mineruTokenController.text.trim(),
       mineruModelVersion: _mineruModelVersion,
       mineruLanguage: _mineruLanguage,
       enableFormula: _enableFormula,
       enableTable: _enableTable,
       ossAccelerate: _ossAccelerate,
-      apiToken: _baiduTokenController.text.trim().isNotEmpty
-          ? _baiduTokenController.text.trim()
-          : _defaultBaiduToken,
+      apiToken: _baiduTokenController.text.trim(),
       pageScope: _pageScope,
       targetPages: targets,
       useDocOrientationClassify: _useDocOrientationClassify,

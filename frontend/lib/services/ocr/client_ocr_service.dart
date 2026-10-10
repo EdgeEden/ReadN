@@ -8,7 +8,7 @@ import 'package:syncfusion_flutter_pdf/pdf.dart';
 class ClientOcrService {
   static const String defaultApiUrl = 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs';
   static const String defaultModelName = 'PaddleOCR-VL-1.6';
-  static const String defaultBaiduToken = 'REDACTED_BAIDU_TOKEN';
+  static const String defaultBaiduToken = '';
 
   static const Map<String, dynamic> defaultOptionalPayload = {
     'markdownIgnoreLabels': [

@@ -143,7 +143,7 @@ class OcrRequest(BaseModel):
     engine: str = "mineru"  # "mineru" (默认) | "paddleocr_vl"
     
     # MinerU API 配置
-    mineru_token: Optional[str] = "REDACTED_MINERU_TOKEN"
+    mineru_token: Optional[str] = None
     mineru_model_version: str = "vlm"  # "vlm" | "pipeline" | "MinerU-HTML"
     mineru_language: str = "auto"  # "auto" | "ch" | "en" | "ja" | "ko" 等
     enable_formula: bool = True
@@ -152,7 +152,7 @@ class OcrRequest(BaseModel):
     oss_accelerate: bool = True  # 是否使用海外/全球 OSS 传输加速专线
     
     # 百度 PaddleOCR-VL API 配置 (兼容保留)
-    api_token: Optional[str] = "REDACTED_BAIDU_TOKEN"
+    api_token: Optional[str] = None
     api_url: Optional[str] = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
     model_name: Optional[str] = "PaddleOCR-VL-1.6"
     page_scope: str = "all"  # "all" | "current" | "custom"

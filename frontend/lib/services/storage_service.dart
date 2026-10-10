@@ -14,7 +14,7 @@ class StorageService {
   static const String _keyAiTemperature = 'readn_ai_temperature';
   static const String _keyAiIncludeContext = 'readn_ai_include_context';
 
-  static const String defaultBaseUrl = 'http://127.0.0.1:18903';
+  static const String defaultBaseUrl = 'http://localhost:18903';
   static const String defaultAiBaseUrl = 'https://api.deepseek.com';
   static const String defaultAiModel = '';
   static const String defaultAiSystemPrompt =

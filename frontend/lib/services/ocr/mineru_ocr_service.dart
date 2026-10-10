@@ -21,7 +21,7 @@ class MineruChunk {
 
 class MineruOcrService {
   static const String defaultApiBase = 'https://mineru.net/api/v4';
-  static const String defaultMineruToken = 'REDACTED_MINERU_TOKEN';
+  static const String defaultMineruToken = '';
   static const String overseasOssAccelerateDomain = 'mineru.oss-accelerate-overseas.aliyuncs.com';
   static const String globalOssAccelerateDomain = 'mineru.oss-accelerate.aliyuncs.com';
   static const String standardOssDomain = 'mineru.oss-cn-shanghai.aliyuncs.com';

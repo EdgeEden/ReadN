@@ -30,7 +30,7 @@ import subprocess
 from datetime import datetime
 
 # 默认配置
-DEFAULT_TOKEN = "REDACTED_MINERU_TOKEN"
+DEFAULT_TOKEN = os.getenv("MINERU_API_TOKEN", "")
 API_BASE = "https://mineru.net/api/v4"
 
 try:
