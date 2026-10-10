@@ -13,12 +13,12 @@ PRE_COMMIT_HOOK = HOOKS_DIR / "pre-commit"
 
 HOOK_CONTENT = """#!/bin/sh
 # ReadN Automated Version Bump Hook
-if command -v python3 >/dev/null 2>&1; then
+if command -v py >/dev/null 2>&1; then
+    py -3 scripts/git_pre_commit.py
+elif command -v python3 >/dev/null 2>&1; then
     python3 scripts/git_pre_commit.py
 elif command -v python >/dev/null 2>&1; then
     python scripts/git_pre_commit.py
-elif command -v py >/dev/null 2>&1; then
-    py scripts/git_pre_commit.py
 fi
 exit 0
 """
