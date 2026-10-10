@@ -963,6 +963,65 @@ End of page.
     expect(wrap.children.length, 1);
   });
 
+  testWidgets('MarkdownReaderView renders highlighted text and subsequent text without abnormal wrap line break', (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final storage = await StorageService.init();
+    final apiService = ApiService(storageService: storage);
+    final docCache = DocCacheService();
+    final annoCache = await AnnotationCacheService.init();
+    final docProvider = DocumentProvider(apiService: apiService, storageService: storage, docCacheService: docCache);
+    final annoProvider = AnnotationProvider(apiService: apiService, storageService: storage, annotationCacheService: annoCache);
+    final settingsProvider = ReaderSettingsProvider(storageService: storage);
+    final aiService = AiService();
+    final aiProvider = AiProvider(storageService: storage, aiService: aiService);
+
+    final doc = DocumentModel(
+      id: 'doc-highlight-wrap',
+      filename: 'sample.pdf',
+      title: 'Sample',
+      fileSize: 1000,
+      pageCount: 1,
+      hasTextLayer: true,
+      hasMarkdown: true,
+      ocrStatus: 'none',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+      annotationCount: 0,
+    );
+
+    const testMarkdown = '<!-- Page 1 -->\n\n选择==离散电平的数值使满足== ==\$M > A_{max} / A_{N}\$== ==，则可以使量化噪声的==影响最小化，这里 \$A_{N}\$ 是模拟信号的均方根噪声振幅。';
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider.value(value: docProvider),
+          ChangeNotifierProvider.value(value: annoProvider),
+          ChangeNotifierProvider.value(value: settingsProvider),
+          ChangeNotifierProvider.value(value: aiProvider),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: MarkdownReaderView(
+              document: doc,
+              markdownContent: testMarkdown,
+              onOpenOcr: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Verify InteractiveLatexView exists for the formula
+    expect(find.byType(InteractiveLatexView), findsWidgets);
+
+    // Verify the paragraph Wrap has exactly 1 merged Text widget (no fragmented child widgets causing newline)
+    final wrapFinder = find.byType(Wrap);
+    expect(wrapFinder, findsWidgets);
+    final wrap = tester.widget<Wrap>(wrapFinder.first);
+    expect(wrap.children.length, 1);
+  });
+
   test('AnnotationProvider deleteAnnotation removes locally even when cloud sync fails', () async {
     SharedPreferences.setMockInitialValues({});
     final storage = await StorageService.init();

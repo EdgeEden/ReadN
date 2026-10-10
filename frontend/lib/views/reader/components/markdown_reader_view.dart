@@ -2160,7 +2160,7 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
       );
     }
 
-    return Container(
+    final container = Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
       margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
       decoration: BoxDecoration(
@@ -2179,6 +2179,18 @@ class _MarkElementBuilder extends MarkdownElementBuilder {
         ],
       ),
       child: contentWidget,
+    );
+
+    return Text.rich(
+      TextSpan(
+        children: [
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            baseline: TextBaseline.alphabetic,
+            child: container,
+          ),
+        ],
+      ),
     );
   }
 }
