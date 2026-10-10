@@ -1,7 +1,7 @@
 name: frontend
 description: "ReadN - High-performance cross-platform PDF Reader with Cloud Sync and Annotations"
 publish_to: 'none'
-version: 1.1.11+12
+version: 1.1.12+13
 
 environment:
   sdk: ^3.13.1

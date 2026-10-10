@@ -15,6 +15,7 @@ import '../../providers/reader_settings_provider.dart';
 import '../../services/cache/doc_cache_service.dart';
 import '../../theme/app_theme.dart';
 import 'components/floating_selection_bar.dart';
+import 'components/knowledge_card_dialog.dart';
 import 'components/markdown_html_support.dart';
 import 'components/markdown_reader_view.dart';
 import 'components/note_editor_dialog.dart';
@@ -377,9 +378,14 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     final aiProv = context.read<AiProvider>();
     aiProv.setPendingQuote(text.trim(), pageNumber: pageNumber);
 
-    // Automatically reveal the AI Chat sidebar
-    final settings = context.read<ReaderSettingsProvider>();
-    settings.openTab(ReaderSidebarTab.aiChat);
+    // Automatically reveal the AI Chat sidebar on desktop, or pull up mobile bottom sheet
+    final isMobile = MediaQuery.of(context).size.width < 700;
+    if (isMobile) {
+      _openMobileSheet(context, ReaderSidebarTab.aiChat);
+    } else {
+      final settings = context.read<ReaderSettingsProvider>();
+      settings.openTab(ReaderSidebarTab.aiChat);
+    }
   }
 
   Future<String?> _getPageContext(int pageNumber) async {
@@ -886,6 +892,34 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
     context.read<AnnotationProvider>().addAnnotation(newAnno);
     context.read<DocumentProvider>().updateAnnotationCount(widget.document.id, 1);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                color: AppTheme.parseHexColor(colorHex),
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '已添加第 $pageNumber 页荧光划词高亮',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
   }
 
   void _createNoteFromSelection({
@@ -928,6 +962,64 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
     context.read<AnnotationProvider>().addAnnotation(newAnno);
     context.read<DocumentProvider>().updateAnnotationCount(widget.document.id, 1);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.edit_note_rounded, color: Color(0xFF818CF8), size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '已添加第 $pageNumber 页批注笔记',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+  }
+
+  void _openPdfNoteDialog(PdfAnnotation note) {
+    showDialog(
+      context: context,
+      builder: (_) => NoteEditorDialog(
+        annotation: note,
+        onSave: (saved) {
+          context.read<AnnotationProvider>().updateAnnotation(
+            saved.id,
+            colorHex: saved.colorHex,
+            noteContent: saved.noteContent,
+          );
+        },
+        onDelete: () {
+          _handleDeleteAnnotation(note);
+        },
+      ),
+    );
+  }
+
+  void _openPdfCardDialog(PdfAnnotation card) {
+    showDialog(
+      context: context,
+      builder: (_) => KnowledgeCardDialog(
+        annotation: card,
+        pageNumber: card.pageNumber,
+        docId: _doc.id,
+        onSave: (updated) {
+          context.read<AnnotationProvider>().updateAnnotationModel(updated);
+        },
+        onDelete: () {
+          _handleDeleteAnnotation(card);
+        },
+        onJumpToPage: _onJumpToPage,
+      ),
+    );
   }
 
   String _removeHighlightFromMarkdown(String markdown, String targetText) {
@@ -980,6 +1072,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     final focusedId = annoProvider.focusedAnnotationId;
 
     for (final anno in pageAnnos) {
+      // 只有荧光高亮 (Highlight) 才在 Canvas 上绘制底色填充矩形
+      // 批注 (Note) 和知识卡片 (Card) 仅在页面上通过 pageOverlaysBuilder 挂载可交互徽标，不绘制底色框
+      if (!anno.isHighlight) continue;
+
       final isFocused = focusedId == anno.id;
       final highlightColor = AppTheme.getHighlightColorForRendering(
         anno.colorHex,
@@ -1014,8 +1110,25 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           canvas.drawRRect(rrect, borderPaint);
         }
       }
+    }
+  }
 
-      if ((anno.isCard || anno.isNote) && anno.rects.isNotEmpty) {
+  List<Widget> _buildPdfPageOverlays(BuildContext context, Rect pageRect, PdfPage page) {
+    final annoProvider = context.watch<AnnotationProvider>();
+    final settings = context.watch<ReaderSettingsProvider>();
+    if (!settings.showAnnotations) return const [];
+
+    final isDark = settings.readingMode == ReadingMode.dark;
+    final pageAnnos = annoProvider.getAnnotationsForPage(page.pageNumber);
+    final badges = <Widget>[];
+
+    for (final anno in pageAnnos) {
+      if (!anno.isNote && !anno.isCard) continue;
+
+      double badgeLeft = 8.0;
+      double badgeTop = 8.0;
+
+      if (anno.rects.isNotEmpty) {
         final firstNorm = anno.rects.first;
         final pdfRect = PdfRect(
           firstNorm.x * page.width,
@@ -1023,45 +1136,183 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           (firstNorm.x + firstNorm.width) * page.width,
           firstNorm.y * page.height,
         );
-        final firstScreenRect = pdfRect.toRectInDocument(page: page, pageRect: pageRect);
+        final screenRect = pdfRect.toRectInDocument(page: page, pageRect: pageRect);
 
-        final pinCenter = Offset(firstScreenRect.right + 6, firstScreenRect.top + 2);
-        final baseColor = AppTheme.parseHexColor(anno.colorHex);
-
-        if (anno.isCard) {
-          final badgeRect = Rect.fromCenter(center: pinCenter, width: 14, height: 14);
-          canvas.drawRRect(
-            RRect.fromRectAndRadius(badgeRect, const Radius.circular(4)),
-            Paint()
-              ..color = baseColor
-              ..style = PaintingStyle.fill,
-          );
-          canvas.drawRRect(
-            RRect.fromRectAndRadius(badgeRect, const Radius.circular(4)),
-            Paint()
-              ..color = isDark ? Colors.white70 : Colors.black38
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.0,
-          );
-        } else {
-          canvas.drawCircle(
-            pinCenter,
-            5.0,
-            Paint()
-              ..color = baseColor
-              ..style = PaintingStyle.fill,
-          );
-          canvas.drawCircle(
-            pinCenter,
-            5.0,
-            Paint()
-              ..color = isDark ? Colors.white70 : Colors.black45
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.0,
-          );
+        // screenRect is in document coordinates; pageRect is this page's rect in document coordinates.
+        // Inside pageOverlaysBuilder, pdfrx places the overlay in a Positioned at pageRect's position.
+        // Therefore, relative coordinates on this page are:
+        badgeLeft = screenRect.left - pageRect.left - 24.0;
+        if (badgeLeft < 4.0) {
+          badgeLeft = (screenRect.left - pageRect.left).clamp(4.0, max(4.0, pageRect.width - 24.0));
         }
+        badgeTop = (screenRect.top - pageRect.top - 2.0).clamp(2.0, max(2.0, pageRect.height - 24.0));
       }
+
+      badges.add(
+        Positioned(
+          left: badgeLeft,
+          top: badgeTop,
+          child: _buildInteractiveAnnotationBadge(anno, isDark),
+        ),
+      );
     }
+
+    return badges;
+  }
+
+  Widget _buildInteractiveAnnotationBadge(PdfAnnotation anno, bool isDark) {
+    final isCard = anno.isCard;
+    final color = AppTheme.parseHexColor(anno.colorHex);
+
+    return Tooltip(
+      message: isCard
+          ? '知识卡片: ${anno.displayTitle} (点击查看/编辑)'
+          : '批注笔记: ${anno.displayTitle} (点击查看/编辑)',
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          onTap: () {
+            if (isCard) {
+              _openPdfCardDialog(anno);
+            } else {
+              _openPdfNoteDialog(anno);
+            }
+          },
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            padding: const EdgeInsets.all(3.5),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: color,
+                width: 1.2,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.14),
+                  blurRadius: 4,
+                  offset: const Offset(0, 1),
+                ),
+              ],
+            ),
+            child: Icon(
+              isCard ? Icons.style_rounded : Icons.edit_note_rounded,
+              size: 14,
+              color: color,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPdfPageSummaryStrip(bool isDark) {
+    final annoProvider = context.watch<AnnotationProvider>();
+    final settings = context.watch<ReaderSettingsProvider>();
+    if (!settings.showAnnotations) return const SizedBox.shrink();
+
+    final isSepia = settings.readingMode == ReadingMode.sepia;
+    final pageAnnos = annoProvider.getAnnotationsForPage(_currentPage);
+    final pageCards = pageAnnos.where((a) => a.isCard).toList();
+    final pageNotes = pageAnnos.where((a) => a.isNote).toList();
+
+    if (pageCards.isEmpty && pageNotes.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+      decoration: BoxDecoration(
+        color: isDark
+            ? Colors.white.withValues(alpha: 0.02)
+            : (isSepia ? const Color(0xFFF0E5CE) : const Color(0xFFF1F5F9)),
+        border: Border(
+          bottom: BorderSide(
+            color: isDark
+                ? const Color(0xFF334155)
+                : (isSepia ? const Color(0xFFE2D6BC) : const Color(0xFFE2E8F0)),
+            width: 0.8,
+          ),
+        ),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          ...pageCards.map((c) {
+            final cColor = AppTheme.parseHexColor(c.colorHex);
+            return Tooltip(
+              message: '知识卡片: ${c.displayTitle} (点击查看)',
+              child: InkWell(
+                onTap: () => _openPdfCardDialog(c),
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: cColor.withValues(alpha: isDark ? 0.25 : 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: cColor.withValues(alpha: 0.4)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.style_rounded, size: 12, color: cColor),
+                      const SizedBox(width: 4),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 160),
+                        child: Text(
+                          c.displayTitle,
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: cColor),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }),
+          ...pageNotes.map((n) {
+            final nColor = AppTheme.parseHexColor(n.colorHex);
+            return Tooltip(
+              message: '批注笔记: ${n.displayTitle} (点击查看)',
+              child: InkWell(
+                onTap: () => _openPdfNoteDialog(n),
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: nColor.withValues(alpha: isDark ? 0.25 : 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: nColor.withValues(alpha: 0.4)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.edit_note_rounded, size: 13, color: nColor),
+                      const SizedBox(width: 4),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 160),
+                        child: Text(
+                          n.displayTitle,
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: nColor),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
   }
 
   Widget _buildCollapsedRail(
@@ -1396,18 +1647,25 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                               child: IndexedStack(
                                 index: _viewMode == ReaderViewMode.pdf ? 0 : 1,
                                 children: [
-                                  Stack(
+                                  Column(
                                     children: [
-                                      if (_isLoadingPdf)
-                                        Center(
-                                          child: _buildPdfLoadingWidget(activeTheme, isDark),
-                                        )
-                                      else if (_loadError != null)
-                                        Center(
-                                          child: _buildPdfErrorWidget(_loadError!, _fetchPdfData, activeTheme),
-                                        )
-                                      else if ((_useUriSource && _pdfUri != null) || _pdfBytes != null)
-                                        _buildPdfViewer(canvasBg, pdfFilter, isDark),
+                                      _buildPdfPageSummaryStrip(isDark),
+                                      Expanded(
+                                        child: Stack(
+                                          children: [
+                                            if (_isLoadingPdf)
+                                              Center(
+                                                child: _buildPdfLoadingWidget(activeTheme, isDark),
+                                              )
+                                            else if (_loadError != null)
+                                              Center(
+                                                child: _buildPdfErrorWidget(_loadError!, _fetchPdfData, activeTheme),
+                                              )
+                                            else if ((_useUriSource && _pdfUri != null) || _pdfBytes != null)
+                                              _buildPdfViewer(canvasBg, pdfFilter, isDark),
+                                          ],
+                                        ),
+                                      ),
                                     ],
                                   ),
                                   if (_hasActivatedMarkdown)
@@ -1657,6 +1915,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       pagePaintCallbacks: [
         (canvas, pageRect, page) => _paintPageAnnotations(canvas, pageRect, page, isDark: isDark),
       ],
+      pageOverlaysBuilder: (viewerContext, pageRect, page) =>
+          _buildPdfPageOverlays(viewerContext, pageRect, page),
       textSelectionParams: PdfTextSelectionParams(
         enabled: true,
         showContextMenuAutomatically: false,

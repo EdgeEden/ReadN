@@ -1453,6 +1453,122 @@ End of page.
       expect(find.text('Current Brightness: Brightness.light'), findsOneWidget);
       expect(settingsProvider.readingMode, ReadingMode.sepia);
     });
+
+    test('PDF note and card are separate from highlight and do not draw highlight fill', () {
+      final highlightAnno = PdfAnnotation(
+        id: 'h1',
+        docId: 'doc1',
+        type: 'highlight',
+        pageNumber: 1,
+        colorHex: '#FFEB3B',
+        rects: const [],
+        selectedText: 'Highlight text',
+        noteContent: '',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      final noteAnno = PdfAnnotation(
+        id: 'n1',
+        docId: 'doc1',
+        type: 'note',
+        pageNumber: 1,
+        colorHex: '#6366F1',
+        rects: const [],
+        selectedText: 'Annotated text',
+        noteContent: 'My comment',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      final cardAnno = PdfAnnotation(
+        id: 'c1',
+        docId: 'doc1',
+        type: 'card',
+        pageNumber: 1,
+        colorHex: '#EC4899',
+        rects: const [],
+        selectedText: 'Card quote',
+        noteContent: 'Card Markdown Content',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      expect(highlightAnno.isHighlight, isTrue);
+      expect(highlightAnno.isNote, isFalse);
+      expect(highlightAnno.isCard, isFalse);
+
+      expect(noteAnno.isHighlight, isFalse);
+      expect(noteAnno.isNote, isTrue);
+      expect(noteAnno.isCard, isFalse);
+
+      expect(cardAnno.isHighlight, isFalse);
+      expect(cardAnno.isNote, isFalse);
+      expect(cardAnno.isCard, isTrue);
+    });
+
+    testWidgets('Interactive annotation badges render correct icons and respond to taps', (WidgetTester tester) async {
+      bool noteClicked = false;
+      bool cardClicked = false;
+
+      final noteAnno = PdfAnnotation(
+        id: 'n1',
+        docId: 'doc1',
+        type: 'note',
+        pageNumber: 1,
+        colorHex: '#6366F1',
+        rects: const [],
+        selectedText: 'Note anchor',
+        noteContent: 'Note comment',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      final cardAnno = PdfAnnotation(
+        id: 'c1',
+        docId: 'doc1',
+        type: 'card',
+        pageNumber: 1,
+        colorHex: '#10B981',
+        rects: const [],
+        selectedText: 'Card quote',
+        noteContent: 'Card markdown body',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Row(
+              children: [
+                InkWell(
+                  key: const ValueKey('note_badge'),
+                  onTap: () => noteClicked = true,
+                  child: const Icon(Icons.edit_note_rounded, size: 14),
+                ),
+                InkWell(
+                  key: const ValueKey('card_badge'),
+                  onTap: () => cardClicked = true,
+                  child: const Icon(Icons.style_rounded, size: 14),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      expect(find.byIcon(Icons.edit_note_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.style_rounded), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('note_badge')));
+      await tester.pump();
+      expect(noteClicked, isTrue);
+
+      await tester.tap(find.byKey(const ValueKey('card_badge')));
+      await tester.pump();
+      expect(cardClicked, isTrue);
+    });
   });
 }
 
