@@ -86,7 +86,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   final GlobalKey<MarkdownReaderViewState> _markdownKey = GlobalKey<MarkdownReaderViewState>();
   double _basePdfZoom = 1.0;
   PdfActiveSelectionState? _pdfActiveSelection;
-  bool _isPinMode = false;
   ArbitraryPointMenuState? _arbitraryMenuState;
   Timer? _touchLongPressTimer;
   Offset _pointerDownGlobalPosition = Offset.zero;
@@ -254,7 +253,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       _viewMode = mode;
       _pdfActiveSelection = null;
       _arbitraryMenuState = null;
-      _isPinMode = false;
       if (mode == ReaderViewMode.markdown) {
         _hasActivatedMarkdown = true;
       }
@@ -1103,62 +1101,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     );
   }
 
-  Widget _buildPinModeBanner(ThemeData theme, bool isDark) {
-    return Positioned(
-      top: 16,
-      left: 0,
-      right: 0,
-      child: Center(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E293B) : Colors.white,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.6), width: 1.2),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF6366F1).withValues(alpha: 0.25),
-                blurRadius: 16,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.push_pin_rounded, color: Color(0xFF6366F1), size: 16),
-              const SizedBox(width: 8),
-              Text(
-                '图钉模式已开启：点击页面任意位置放置批注',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.white : const Color(0xFF1E293B),
-                ),
-              ),
-              const SizedBox(width: 10),
-              InkWell(
-                onTap: () => setState(() => _isPinMode = false),
-                borderRadius: BorderRadius.circular(12),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.close_rounded, size: 14, color: Colors.grey.shade500),
-                      const SizedBox(width: 2),
-                      Text('退出', style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   void _createHighlightFromSelection({
     required String colorHex,
     required String selectedText,
@@ -1294,8 +1236,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   ({int pageNumber, NormalizedRect normalizedRect})? _resolvePdfPageCoordinates(Offset viewerLocalPos) {
     if (!_pdfController.isReady) return null;
-    final invMatrix = Matrix4.inverted(_pdfController.value);
-    final docPos = MatrixUtils.transformPoint(invMatrix, viewerLocalPos);
+    final docPos = _pdfController.localToDocument(viewerLocalPos);
 
     final pageLayouts = _pdfController.layout.pageLayouts;
     if (pageLayouts.isEmpty) return null;
@@ -1354,16 +1295,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         );
       });
     }
-  }
-
-  void _handlePinDrop(Offset localPos) {
-    final resolved = _resolvePdfPageCoordinates(localPos);
-    if (resolved == null) return;
-
-    _openNewNoteDialogForPage(
-      resolved.pageNumber,
-      normalizedRect: resolved.normalizedRect,
-    );
   }
 
   void _openNewNoteDialogForPage(int pageNumber, {NormalizedRect? normalizedRect}) {
@@ -2033,10 +1964,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             autofocus: true,
             onKeyEvent: (node, event) {
               if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
-                if (_isPinMode) {
-                  setState(() => _isPinMode = false);
-                  return KeyEventResult.handled;
-                }
                 if (_arbitraryMenuState != null) {
                   setState(() => _arbitraryMenuState = null);
                   return KeyEventResult.handled;
@@ -2088,8 +2015,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                               _onJumpToPage(_currentPage + 1);
                             }
                           },
-                          isPinMode: _isPinMode,
-                          onTogglePinMode: () => setState(() => _isPinMode = !_isPinMode),
                         ),
 
                       // Scanned / Image PDF OCR Banner
@@ -2460,6 +2385,15 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           }
         },
       ),
+      buildContextMenu: (viewerContext, params) {
+        if (params.contextMenuFor != PdfViewerPart.selectedText) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            params.dismissContextMenu();
+            _handleSecondaryClick(params.anchorA, isTouch: false);
+          });
+        }
+        return null;
+      },
       onPageChanged: (pageNumber) {
         if (pageNumber != null && _viewMode == ReaderViewMode.pdf) {
           _saveCurrentPage(pageNumber);
@@ -2528,7 +2462,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         return Stack(
           children: [
             MouseRegion(
-              cursor: _isPinMode ? SystemMouseCursors.precise : MouseCursor.defer,
+              cursor: MouseCursor.defer,
               child: Listener(
                 behavior: HitTestBehavior.translucent,
                 onPointerDown: (event) {
@@ -2577,13 +2511,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   final stackPos = renderBox != null
                       ? renderBox.globalToLocal(event.position)
                       : event.localPosition;
-
-                  // Pin mode drop
-                  if (_isPinMode && (event.position - _pointerDownGlobalPosition).distance < 6) {
-                    setState(() => _isPinMode = false);
-                    _handlePinDrop(stackPos);
-                    return;
-                  }
 
                   await Future.delayed(const Duration(milliseconds: 50));
                   if (!mounted) return;
@@ -2688,8 +2615,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                 isMobile: isMobile,
                 readingMode: settings.readingMode,
               ),
-            if (_isPinMode)
-              _buildPinModeBanner(activeTheme, isDark),
           ],
         );
       },

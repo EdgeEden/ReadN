@@ -114,6 +114,47 @@
   </div>
 
   <script>
+    // 0. Service Worker version detection & cache purge
+    (function() {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for (var i = 0; i < registrations.length; i++) {
+            registrations[i].update();
+          }
+        });
+
+        fetch('version.json?t=' + Date.now(), { cache: 'no-store' })
+          .then(function(response) { return response.json(); })
+          .then(function(data) {
+            if (data && data.version) {
+              var currentStoredVersion = localStorage.getItem('readn_app_version');
+              if (currentStoredVersion && currentStoredVersion !== data.version) {
+                console.log('[ReadN] New version detected: ' + data.version + ' (was ' + currentStoredVersion + '). Purging caches...');
+                localStorage.setItem('readn_app_version', data.version);
+                if ('caches' in window) {
+                  caches.keys().then(function(names) {
+                    for (var j = 0; j < names.length; j++) {
+                      caches.delete(names[j]);
+                    }
+                  });
+                }
+                navigator.serviceWorker.getRegistrations().then(function(registrations) {
+                  for (var k = 0; k < registrations.length; k++) {
+                    registrations[k].unregister();
+                  }
+                  window.location.reload();
+                });
+              } else {
+                localStorage.setItem('readn_app_version', data.version);
+              }
+            }
+          })
+          .catch(function(err) {
+            console.warn('[ReadN] Version check bypassed:', err);
+          });
+      }
+    })();
+
     function dismissLoadingScreen() {
       var loader = document.getElementById('loading-container');
       if (loader && !loader.classList.contains('loaded')) {

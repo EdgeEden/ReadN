@@ -34,6 +34,22 @@ app.add_middleware(
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length", "Content-Disposition"]
 )
 
+# Anti-caching middleware for frontend entry points and service workers
+@app.middleware("http")
+async def add_cache_control_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if (
+        path in ("/", "/index.html", "/version.json", "/flutter_bootstrap.js", "/flutter_service_worker.js")
+        or path.endswith(".html")
+        or "version.json" in path
+    ):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 # Register routers
 app.include_router(documents.router)
 app.include_router(annotations.router)
@@ -48,6 +64,24 @@ async def health_check():
     }
 
 
+@app.get("/version.json")
+async def get_version_json():
+    version_file = STATIC_DIR / "version.json"
+    if version_file.exists():
+        resp = FileResponse(str(version_file), media_type="application/json")
+    else:
+        resp = JSONResponse({
+            "app_name": "frontend",
+            "version": APP_VERSION,
+            "build_number": "1",
+            "package_name": "frontend"
+        })
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
 # Mount static files if web build exists
 if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
     @app.exception_handler(StarletteHTTPException)
@@ -55,7 +89,11 @@ if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
         if exc.status_code == 404 and not request.url.path.startswith("/api/"):
             index_file = STATIC_DIR / "index.html"
             if index_file.exists():
-                return FileResponse(str(index_file))
+                resp = FileResponse(str(index_file))
+                resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+                resp.headers["Pragma"] = "no-cache"
+                resp.headers["Expires"] = "0"
+                return resp
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

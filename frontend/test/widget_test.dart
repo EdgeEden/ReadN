@@ -1615,60 +1615,6 @@ End of page.
       expect(normalAnno.displayTitle, 'Text note');
     });
 
-    testWidgets('ReaderTopBar renders pin mode button and responds to tap', (tester) async {
-      tester.view.physicalSize = const Size(1200, 800);
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(() => tester.view.resetPhysicalSize());
-
-      final doc = DocumentModel(
-        id: 'doc-topbar',
-        filename: 'test.pdf',
-        title: 'TopBar Test',
-        fileSize: 1024,
-        pageCount: 5,
-        hasTextLayer: true,
-        hasMarkdown: false,
-        ocrStatus: 'none',
-        createdAt: DateTime.now(),
-        updatedAt: DateTime.now(),
-      );
-
-      bool pinModeToggled = false;
-
-      await tester.pumpWidget(
-        MultiProvider(
-          providers: [
-            ChangeNotifierProvider.value(value: settingsProvider),
-          ],
-          child: MaterialApp(
-            home: Scaffold(
-              body: ReaderTopBar(
-                document: doc,
-                currentPage: 1,
-                totalPages: 5,
-                isMobile: false,
-                isPinMode: false,
-                onJumpToPage: (_) {},
-                onZoomIn: () {},
-                onZoomOut: () {},
-                onResetZoom: () {},
-                onPrevPage: () {},
-                onNextPage: () {},
-                onTogglePinMode: () {
-                  pinModeToggled = true;
-                },
-              ),
-            ),
-          ),
-        ),
-      );
-
-      expect(find.byIcon(Icons.push_pin_outlined), findsOneWidget);
-      await tester.tap(find.byIcon(Icons.push_pin_outlined));
-      await tester.pump();
-      expect(pinModeToggled, isTrue);
-    });
-
     testWidgets('NoteEditorDialog displays point annotation anchor prompt correctly', (tester) async {
       final pointAnno = PdfAnnotation(
         id: 'point-dlg',
