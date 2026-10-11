@@ -160,6 +160,7 @@ class FloatingSelectionBar extends StatelessWidget {
             IconButton(
               icon: Icon(Icons.copy_rounded, size: 16, color: iconColor),
               padding: const EdgeInsets.all(5),
+              visualDensity: VisualDensity.compact,
               constraints: const BoxConstraints(),
               tooltip: '复制',
               onPressed: () => _copyToClipboard(context),
@@ -168,6 +169,7 @@ class FloatingSelectionBar extends StatelessWidget {
             IconButton(
               icon: Icon(Icons.close_rounded, size: 16, color: iconColor.withValues(alpha: 0.6)),
               padding: const EdgeInsets.all(5),
+              visualDensity: VisualDensity.compact,
               constraints: const BoxConstraints(),
               tooltip: '关闭',
               onPressed: onDismiss,

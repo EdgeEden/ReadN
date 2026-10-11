@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:pdfrx/pdfrx.dart' hide PdfAnnotation;
 import 'package:provider/provider.dart';
@@ -63,10 +64,12 @@ class PdfReaderScreen extends StatefulWidget {
   State<PdfReaderScreen> createState() => _PdfReaderScreenState();
 }
 
-class _PdfReaderScreenState extends State<PdfReaderScreen> {
+class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderStateMixin {
   late PdfViewerController _pdfController;
   late DocumentModel _doc;
   int _currentPage = 1;
+  late final ValueNotifier<int> _currentPageNotifier = ValueNotifier<int>(1);
+  Timer? _pageSaveDebounceTimer;
   int _totalPages = 0;
   Uint8List? _pdfBytes;
   Uri? _pdfUri;
@@ -90,11 +93,15 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   double _basePdfZoom = 1.0;
   PdfActiveSelectionState? _pdfActiveSelection;
   ArbitraryPointMenuState? _arbitraryMenuState;
-  Timer? _touchLongPressTimer;
-  Timer? _stylusLongPressTimer;
   Offset _pointerDownGlobalPosition = Offset.zero;
-  Offset _pointerDownLocalPosition = Offset.zero;
   bool _wasSelectionActiveOnPointerDown = false;
+
+  // Edge auto-scrolling state
+  Ticker? _edgeScrollTicker;
+  Duration _lastEdgeScrollElapsed = Duration.zero;
+  Offset? _currentPointerLocalPosition;
+  bool _isPointerDown = false;
+  Size _currentViewerSize = Size.zero;
 
   // Stylus & Palm Rejection state
   bool _isStylusContacting = false;
@@ -138,6 +145,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       final lastPage = context.read<DocumentProvider>().storageService.getLastReadPage(_doc.id);
       if (lastPage > 1) {
         _currentPage = lastPage;
+        _currentPageNotifier.value = lastPage;
       }
       _fetchPdfData();
       if (_doc.hasMarkdown) {
@@ -155,15 +163,105 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     if (kIsWeb) {
       BrowserContextMenu.enableContextMenu();
     }
-    _touchLongPressTimer?.cancel();
-    _stylusLongPressTimer?.cancel();
+    _stopEdgeScrollTicker();
     _pdfController.removeListener(_onPdfControllerUpdate);
     _ocrPollTimer?.cancel();
+    _pageSaveDebounceTimer?.cancel();
+    if (_currentPage >= 1) {
+      try {
+        context.read<DocumentProvider>().storageService.setLastReadPage(_doc.id, _currentPage);
+      } catch (_) {}
+    }
+    _currentPageNotifier.dispose();
     super.dispose();
+  }
+
+  void _startEdgeScrollTicker() {
+    if (_edgeScrollTicker != null && _edgeScrollTicker!.isActive) return;
+    _lastEdgeScrollElapsed = Duration.zero;
+    _edgeScrollTicker?.dispose();
+    _edgeScrollTicker = createTicker(_onEdgeScrollTick);
+    _edgeScrollTicker!.start();
+  }
+
+  void _stopEdgeScrollTicker() {
+    _edgeScrollTicker?.stop();
+    _edgeScrollTicker?.dispose();
+    _edgeScrollTicker = null;
+    _lastEdgeScrollElapsed = Duration.zero;
+  }
+
+  void _checkAndTriggerEdgeScroll(Offset localPos, Size viewerSize) {
+    if (!_pdfController.isReady || viewerSize.width <= 0 || viewerSize.height <= 0) return;
+    const double edgeMarginY = 80.0;
+    const double edgeMarginX = 60.0;
+    final bool nearEdge = localPos.dy < edgeMarginY ||
+        localPos.dy > viewerSize.height - edgeMarginY ||
+        localPos.dx < edgeMarginX ||
+        localPos.dx > viewerSize.width - edgeMarginX;
+
+    if (nearEdge) {
+      _startEdgeScrollTicker();
+    }
+  }
+
+  void _onEdgeScrollTick(Duration elapsed) {
+    if (!_isPointerDown || !mounted || !_pdfController.isReady) {
+      _stopEdgeScrollTicker();
+      return;
+    }
+    final localPos = _currentPointerLocalPosition;
+    final viewerSize = _currentViewerSize;
+    if (localPos == null || viewerSize.width <= 0 || viewerSize.height <= 0) return;
+
+    const double edgeMarginY = 80.0;
+    const double edgeMarginX = 60.0;
+
+    double vy = 0.0;
+    if (localPos.dy < edgeMarginY) {
+      final ratio = ((edgeMarginY - localPos.dy) / edgeMarginY).clamp(0.0, 1.5);
+      vy = 300.0 + 600.0 * ratio; // scroll up (content moves down)
+    } else if (localPos.dy > viewerSize.height - edgeMarginY) {
+      final ratio = ((localPos.dy - (viewerSize.height - edgeMarginY)) / edgeMarginY).clamp(0.0, 1.5);
+      vy = -(300.0 + 600.0 * ratio); // scroll down (content moves up)
+    }
+
+    double vx = 0.0;
+    if (localPos.dx < edgeMarginX) {
+      final ratio = ((edgeMarginX - localPos.dx) / edgeMarginX).clamp(0.0, 1.5);
+      vx = 300.0 + 600.0 * ratio; // scroll left (content moves right)
+    } else if (localPos.dx > viewerSize.width - edgeMarginX) {
+      final ratio = ((localPos.dx - (viewerSize.width - edgeMarginX)) / edgeMarginX).clamp(0.0, 1.5);
+      vx = -(300.0 + 600.0 * ratio); // scroll right (content moves left)
+    }
+
+    if (vx == 0.0 && vy == 0.0) {
+      _lastEdgeScrollElapsed = elapsed;
+      return;
+    }
+
+    final double dt = _lastEdgeScrollElapsed == Duration.zero
+        ? 0.016
+        : ((elapsed - _lastEdgeScrollElapsed).inMicroseconds / 1000000.0).clamp(0.005, 0.05);
+    _lastEdgeScrollElapsed = elapsed;
+
+    final double stepX = vx * dt;
+    final double stepY = vy * dt;
+
+    final m = _pdfController.value.clone();
+    m.storage[12] += stepX;
+    m.storage[13] += stepY;
+    final clamped = _pdfController.calcMatrixForClampedToNearestBoundary(m, viewSize: viewerSize);
+    _pdfController.value = clamped;
+
+    if (_stylusInteractionStartMatrix != null) {
+      _stylusInteractionStartMatrix = clamped.clone();
+    }
   }
 
   void _onPdfControllerUpdate() {
     if (!mounted || _viewMode != ReaderViewMode.pdf || !_pdfController.isReady) return;
+    if (_edgeScrollTicker != null && _edgeScrollTicker!.isActive) return;
     final settings = context.read<ReaderSettingsProvider>();
     if (settings.isStylusMode &&
         (_currentInteractionDeviceKind == PointerDeviceKind.stylus ||
@@ -177,7 +275,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     }
     if (_basePdfZoom > 0) {
       final ratio = _pdfController.currentZoom / _basePdfZoom;
-      if ((ratio - settings.zoomScale).abs() > 0.03) {
+      if ((ratio - settings.zoomScale).abs() > 0.05) {
         settings.setZoomScale(ratio);
       }
     }
@@ -453,9 +551,15 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   void _saveCurrentPage(int page) {
-    if (page >= 1) {
-      setState(() => _currentPage = page);
-      context.read<DocumentProvider>().storageService.setLastReadPage(_doc.id, page);
+    if (page >= 1 && _currentPage != page) {
+      _currentPage = page;
+      _currentPageNotifier.value = page;
+      _pageSaveDebounceTimer?.cancel();
+      _pageSaveDebounceTimer = Timer(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          context.read<DocumentProvider>().storageService.setLastReadPage(_doc.id, page);
+        }
+      });
     }
   }
 
@@ -901,7 +1005,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     bool? isMobile,
   }) {
     final bool mobile = isMobile ?? (containerSize.width < 700);
-    final double menuWidth = mobile ? 248.0 : 380.0;
+    final double menuWidth = mobile ? 248.0 : 420.0;
     final double menuHeight = mobile ? 78.0 : 48.0;
 
     double left = pointerPos.dx - (menuWidth / 2);
@@ -1342,6 +1446,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     final resolved = _resolvePdfPageCoordinates(localPos);
     if (resolved == null) return;
 
+    if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
+      _pdfController.textSelectionDelegate.clearTextSelection();
+    }
+
     if (mounted) {
       setState(() {
         _pdfActiveSelection = null;
@@ -1675,142 +1783,147 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   Widget _buildPdfPageSummaryStrip(bool isDark) {
-    final annoProvider = context.watch<AnnotationProvider>();
-    final settings = context.watch<ReaderSettingsProvider>();
-    if (!settings.showAnnotations) return const SizedBox.shrink();
+    return ValueListenableBuilder<int>(
+      valueListenable: _currentPageNotifier,
+      builder: (context, curPage, _) {
+        final annoProvider = context.watch<AnnotationProvider>();
+        final settings = context.watch<ReaderSettingsProvider>();
+        if (!settings.showAnnotations) return const SizedBox.shrink();
 
-    final isSepia = settings.readingMode == ReadingMode.sepia;
-    final pageAnnos = annoProvider.getAnnotationsForPage(_currentPage);
-    final pageCards = pageAnnos.where((a) => a.isCard).toList();
-    final pageNotes = pageAnnos.where((a) => a.isNote).toList();
+        final isSepia = settings.readingMode == ReadingMode.sepia;
+        final pageAnnos = annoProvider.getAnnotationsForPage(curPage);
+        final pageCards = pageAnnos.where((a) => a.isCard).toList();
+        final pageNotes = pageAnnos.where((a) => a.isNote).toList();
 
-    if (pageCards.isEmpty && pageNotes.isEmpty) {
-      return const SizedBox.shrink();
-    }
+        if (pageCards.isEmpty && pageNotes.isEmpty) {
+          return const SizedBox.shrink();
+        }
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-      decoration: BoxDecoration(
-        color: isDark
-            ? Colors.white.withValues(alpha: 0.02)
-            : (isSepia ? const Color(0xFFF0E5CE) : const Color(0xFFF1F5F9)),
-        border: Border(
-          bottom: BorderSide(
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+          decoration: BoxDecoration(
             color: isDark
-                ? const Color(0xFF334155)
-                : (isSepia ? const Color(0xFFE2D6BC) : const Color(0xFFE2E8F0)),
-            width: 0.8,
-          ),
-        ),
-      ),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 4,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          ...pageCards.map((c) {
-            final cColor = AppTheme.parseHexColor(c.colorHex);
-            return Tooltip(
-              message: '知识卡片: ${c.displayTitle} (点击查看)',
-              child: InkWell(
-                onTap: () => _openPdfCardDialog(c),
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: cColor.withValues(alpha: isDark ? 0.25 : 0.12),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: cColor.withValues(alpha: 0.4)),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.style_rounded, size: 12, color: cColor),
-                      const SizedBox(width: 4),
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 160),
-                        child: Text(
-                          c.displayTitle,
-                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: cColor),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          }),
-          ...pageNotes.map((n) {
-            final nColor = AppTheme.parseHexColor(n.colorHex);
-            return Tooltip(
-              message: '批注笔记: ${n.displayTitle} (点击查看)',
-              child: InkWell(
-                onTap: () => _openPdfNoteDialog(n),
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: nColor.withValues(alpha: isDark ? 0.25 : 0.12),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: nColor.withValues(alpha: 0.4)),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.edit_note_rounded, size: 13, color: nColor),
-                      const SizedBox(width: 4),
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 160),
-                        child: Text(
-                          n.displayTitle,
-                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: nColor),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          }),
-          Tooltip(
-            message: '在当前第 $_currentPage 页添加批注笔记',
-            child: InkWell(
-              onTap: () => _openNewNoteDialogForPage(_currentPage),
-              borderRadius: BorderRadius.circular(6),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primary.withValues(alpha: isDark ? 0.2 : 0.08),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.35),
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.add_rounded, size: 12, color: Theme.of(context).colorScheme.primary),
-                    const SizedBox(width: 3),
-                    Text(
-                      '记批注',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                    ),
-                  ],
-                ),
+                ? Colors.white.withValues(alpha: 0.02)
+                : (isSepia ? const Color(0xFFF0E5CE) : const Color(0xFFF1F5F9)),
+            border: Border(
+              bottom: BorderSide(
+                color: isDark
+                    ? const Color(0xFF334155)
+                    : (isSepia ? const Color(0xFFE2D6BC) : const Color(0xFFE2E8F0)),
+                width: 0.8,
               ),
             ),
           ),
-        ],
-      ),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              ...pageCards.map((c) {
+                final cColor = AppTheme.parseHexColor(c.colorHex);
+                return Tooltip(
+                  message: '知识卡片: ${c.displayTitle} (点击查看)',
+                  child: InkWell(
+                    onTap: () => _openPdfCardDialog(c),
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: cColor.withValues(alpha: isDark ? 0.25 : 0.12),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: cColor.withValues(alpha: 0.4)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.style_rounded, size: 12, color: cColor),
+                          const SizedBox(width: 4),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 160),
+                            child: Text(
+                              c.displayTitle,
+                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: cColor),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }),
+              ...pageNotes.map((n) {
+                final nColor = AppTheme.parseHexColor(n.colorHex);
+                return Tooltip(
+                  message: '批注笔记: ${n.displayTitle} (点击查看)',
+                  child: InkWell(
+                    onTap: () => _openPdfNoteDialog(n),
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: nColor.withValues(alpha: isDark ? 0.25 : 0.12),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: nColor.withValues(alpha: 0.4)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.edit_note_rounded, size: 13, color: nColor),
+                          const SizedBox(width: 4),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 160),
+                            child: Text(
+                              n.displayTitle,
+                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: nColor),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }),
+              Tooltip(
+                message: '在当前第 $curPage 页添加批注笔记',
+                child: InkWell(
+                  onTap: () => _openNewNoteDialogForPage(curPage),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primary.withValues(alpha: isDark ? 0.2 : 0.08),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.35),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add_rounded, size: 12, color: Theme.of(context).colorScheme.primary),
+                        const SizedBox(width: 3),
+                        Text(
+                          '记批注',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -1862,53 +1975,61 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           // If left rail: Show compact page jump & zoom controls even when collapsed
           if (isLeft) ...[
             // 1. Page Navigation
-            IconButton(
-              icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 18),
-              tooltip: '上一页 (P.${_currentPage > 1 ? _currentPage - 1 : 1})',
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
-              onPressed: _currentPage > 1 ? () => _onJumpToPage(_currentPage - 1) : null,
-            ),
-            Tooltip(
-              message: '点击跳转页面 (共 $totalPages 页)',
-              child: InkWell(
-                onTap: () {
-                  showDialog(
-                    context: context,
-                    builder: (_) => PageJumpDialog(
-                      currentPage: _currentPage,
-                      totalPages: totalPages,
-                      onJump: _onJumpToPage,
-                    ),
-                  );
-                },
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.primary.withValues(alpha: isDark ? 0.2 : 0.1),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(
-                      color: theme.colorScheme.primary.withValues(alpha: 0.35),
+            ValueListenableBuilder<int>(
+              valueListenable: _currentPageNotifier,
+              builder: (context, currentPage, _) => Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 18),
+                    tooltip: '上一页 (P.${currentPage > 1 ? currentPage - 1 : 1})',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
+                    onPressed: currentPage > 1 ? () => _onJumpToPage(currentPage - 1) : null,
+                  ),
+                  Tooltip(
+                    message: '点击跳转页面 (共 $totalPages 页)',
+                    child: InkWell(
+                      onTap: () {
+                        showDialog(
+                          context: context,
+                          builder: (_) => PageJumpDialog(
+                            currentPage: currentPage,
+                            totalPages: totalPages,
+                            onJump: _onJumpToPage,
+                          ),
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(6),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primary.withValues(alpha: isDark ? 0.2 : 0.1),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: theme.colorScheme.primary.withValues(alpha: 0.35),
+                          ),
+                        ),
+                        child: Text(
+                          '$currentPage',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                  child: Text(
-                    '$_currentPage',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: theme.colorScheme.primary,
-                    ),
+                  IconButton(
+                    icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
+                    tooltip: '下一页 (P.${currentPage < totalPages ? currentPage + 1 : totalPages})',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
+                    onPressed: currentPage < totalPages ? () => _onJumpToPage(currentPage + 1) : null,
                   ),
-                ),
+                ],
               ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
-              tooltip: '下一页 (P.${_currentPage < totalPages ? _currentPage + 1 : totalPages})',
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
-              onPressed: _currentPage < totalPages ? () => _onJumpToPage(_currentPage + 1) : null,
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1938,9 +2059,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                     color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
                     borderRadius: BorderRadius.circular(5),
                   ),
-                  child: Text(
-                    '${(settings.zoomScale * 100).toInt()}%',
-                    style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold),
+                  child: Consumer<ReaderSettingsProvider>(
+                    builder: (context, s, _) => Text(
+                      '${(s.zoomScale * 100).toInt()}%',
+                      style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ),
               ),
@@ -1984,11 +2107,16 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final settings = context.watch<ReaderSettingsProvider>();
-    final isDark = settings.readingMode == ReadingMode.dark;
+    final readingMode = context.select<ReaderSettingsProvider, ReadingMode>((s) => s.readingMode);
+    final isDark = readingMode == ReadingMode.dark;
+    final isLeftSidebarOpen = context.select<ReaderSettingsProvider, bool>((s) => s.isLeftSidebarOpen);
+    final isRightSidebarOpen = context.select<ReaderSettingsProvider, bool>((s) => s.isRightSidebarOpen);
+    final leftDockedTabs = context.select<ReaderSettingsProvider, List<ReaderSidebarTab>>((s) => s.leftDockedTabs);
+    final rightDockedTabs = context.select<ReaderSettingsProvider, List<ReaderSidebarTab>>((s) => s.rightDockedTabs);
+    final settings = context.read<ReaderSettingsProvider>();
 
     ThemeData activeTheme;
-    switch (settings.readingMode) {
+    switch (readingMode) {
       case ReadingMode.dark:
         activeTheme = AppTheme.darkTheme;
         break;
@@ -2000,13 +2128,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         break;
     }
 
-    final canvasBg = AppTheme.getReaderBgColor(settings.readingMode);
+    final canvasBg = AppTheme.getReaderBgColor(readingMode);
 
     // Color filter for dark mode and sepia mode
     ColorFilter? pdfFilter;
-    if (settings.readingMode == ReadingMode.dark) {
+    if (readingMode == ReadingMode.dark) {
       pdfFilter = AppTheme.darkPdfColorFilter;
-    } else if (settings.readingMode == ReadingMode.sepia) {
+    } else if (readingMode == ReadingMode.sepia) {
       pdfFilter = AppTheme.sepiaPdfColorFilter;
     }
 
@@ -2030,12 +2158,15 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             child: Scaffold(
               backgroundColor: canvasBg,
               bottomNavigationBar: isMobile && !_isImmersiveMode
-                ? ReaderBottomBar(
-                    currentPage: _currentPage,
-                    totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
-                    onTabSelected: (tab) => _openMobileSheet(context, tab),
-                    onOpenProgress: () => _openMobileProgressSheet(context),
-                    isMarkdownMode: _viewMode == ReaderViewMode.markdown,
+                ? ValueListenableBuilder<int>(
+                    valueListenable: _currentPageNotifier,
+                    builder: (context, curPage, _) => ReaderBottomBar(
+                      currentPage: curPage,
+                      totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                      onTabSelected: (tab) => _openMobileSheet(context, tab),
+                      onOpenProgress: () => _openMobileProgressSheet(context),
+                      isMarkdownMode: _viewMode == ReaderViewMode.markdown,
+                    ),
                   )
                 : null,
             body: SafeArea(
@@ -2047,30 +2178,33 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                     children: [
                       // Top Bar
                       if (!_isImmersiveMode)
-                        ReaderTopBar(
-                          isMobile: isMobile,
-                          document: _doc,
-                          ocrProgress: _ocrStatusInfo,
-                          currentPage: _currentPage,
-                          totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
-                          onJumpToPage: _onJumpToPage,
-                          onOpenOcr: _showOcrDialog,
-                          viewMode: _viewMode,
-                          onViewModeChanged: _onViewModeChanged,
-                          hasMarkdown: _doc.hasMarkdown || (_markdownContent != null && _markdownContent!.trim().isNotEmpty),
-                          onZoomIn: _handleZoomIn,
-                          onZoomOut: _handleZoomOut,
-                          onResetZoom: _handleResetZoom,
-                          onPrevPage: () {
-                            if (_currentPage > 1) {
-                              _onJumpToPage(_currentPage - 1);
-                            }
-                          },
-                          onNextPage: () {
-                            if (_currentPage < _totalPages) {
-                              _onJumpToPage(_currentPage + 1);
-                            }
-                          },
+                        ValueListenableBuilder<int>(
+                          valueListenable: _currentPageNotifier,
+                          builder: (context, curPage, _) => ReaderTopBar(
+                            isMobile: isMobile,
+                            document: _doc,
+                            ocrProgress: _ocrStatusInfo,
+                            currentPage: curPage,
+                            totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                            onJumpToPage: _onJumpToPage,
+                            onOpenOcr: _showOcrDialog,
+                            viewMode: _viewMode,
+                            onViewModeChanged: _onViewModeChanged,
+                            hasMarkdown: _doc.hasMarkdown || (_markdownContent != null && _markdownContent!.trim().isNotEmpty),
+                            onZoomIn: _handleZoomIn,
+                            onZoomOut: _handleZoomOut,
+                            onResetZoom: _handleResetZoom,
+                            onPrevPage: () {
+                              if (_currentPage > 1) {
+                                _onJumpToPage(_currentPage - 1);
+                              }
+                            },
+                            onNextPage: () {
+                              if (_currentPage < _totalPages) {
+                                _onJumpToPage(_currentPage + 1);
+                              }
+                            },
+                          ),
                         ),
 
                       // Scanned / Image PDF OCR Banner
@@ -2123,31 +2257,34 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                           children: [
                             // 1. Left Sidebar (Desktop & Tablet only: !isMobile)
                             if (!isMobile) ...[
-                              if (settings.isLeftSidebarOpen && settings.leftDockedTabs.isNotEmpty)
-                                ReaderSidebar(
-                                  position: SidebarDockPosition.left,
-                                  outlineItems: _outlineItems,
-                                  isOutlineLoading: _isOutlineLoading,
-                                  searchQuery: _searchQuery,
-                                  searchResults: _searchResults,
-                                  isSearching: _isSearching,
-                                  onSearchChanged: _onSearchQueryChanged,
-                                  onClearSearch: () => setState(() {
-                                    _searchQuery = '';
-                                    _searchResults = [];
-                                  }),
-                                  onJumpToPage: _onJumpToPage,
-                                  currentPage: _currentPage,
-                                  totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
-                                  documentTitle: _doc.title,
-                                  docId: _doc.id,
-                                  onGetPageContext: _getPageContext,
-                                  onZoomIn: _handleZoomIn,
-                                  onZoomOut: _handleZoomOut,
-                                  onResetZoom: _handleResetZoom,
-                                  onFitWidth: _handleFitWidth,
-                                  onDeleteAnnotation: _handleDeleteAnnotation,
-                                  onAddNewNote: (page) => _openNewNoteDialogForPage(page),
+                              if (isLeftSidebarOpen && leftDockedTabs.isNotEmpty)
+                                ValueListenableBuilder<int>(
+                                  valueListenable: _currentPageNotifier,
+                                  builder: (context, curPage, _) => ReaderSidebar(
+                                    position: SidebarDockPosition.left,
+                                    outlineItems: _outlineItems,
+                                    isOutlineLoading: _isOutlineLoading,
+                                    searchQuery: _searchQuery,
+                                    searchResults: _searchResults,
+                                    isSearching: _isSearching,
+                                    onSearchChanged: _onSearchQueryChanged,
+                                    onClearSearch: () => setState(() {
+                                      _searchQuery = '';
+                                      _searchResults = [];
+                                    }),
+                                    onJumpToPage: _onJumpToPage,
+                                    currentPage: curPage,
+                                    totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                                    documentTitle: _doc.title,
+                                    docId: _doc.id,
+                                    onGetPageContext: _getPageContext,
+                                    onZoomIn: _handleZoomIn,
+                                    onZoomOut: _handleZoomOut,
+                                    onResetZoom: _handleResetZoom,
+                                    onFitWidth: _handleFitWidth,
+                                    onDeleteAnnotation: _handleDeleteAnnotation,
+                                    onAddNewNote: (page) => _openNewNoteDialogForPage(page),
+                                  ),
                                 )
                               else
                                 _buildCollapsedRail(SidebarDockPosition.left, settings, isDark, activeTheme),
@@ -2195,33 +2332,36 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
                             // 3. Right Sidebar (Desktop & Tablet only: !isMobile)
                             if (!isMobile) ...[
-                              if (settings.isRightSidebarOpen && settings.rightDockedTabs.isNotEmpty)
-                                ReaderSidebar(
-                                  position: SidebarDockPosition.right,
-                                  outlineItems: _outlineItems,
-                                  isOutlineLoading: _isOutlineLoading,
-                                  searchQuery: _searchQuery,
-                                  searchResults: _searchResults,
-                                  isSearching: _isSearching,
-                                  onSearchChanged: _onSearchQueryChanged,
-                                  onClearSearch: () => setState(() {
-                                    _searchQuery = '';
-                                    _searchResults = [];
-                                  }),
-                                  onJumpToPage: _onJumpToPage,
-                                  currentPage: _currentPage,
-                                  totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
-                                  documentTitle: _doc.title,
-                                  docId: _doc.id,
-                                  onGetPageContext: _getPageContext,
-                                  onZoomIn: _handleZoomIn,
-                                  onZoomOut: _handleZoomOut,
-                                  onResetZoom: _handleResetZoom,
-                                  onFitWidth: _handleFitWidth,
-                                  onDeleteAnnotation: _handleDeleteAnnotation,
-                                  onAddNewNote: (page) => _openNewNoteDialogForPage(page),
+                              if (isRightSidebarOpen && rightDockedTabs.isNotEmpty)
+                                ValueListenableBuilder<int>(
+                                  valueListenable: _currentPageNotifier,
+                                  builder: (context, curPage, _) => ReaderSidebar(
+                                    position: SidebarDockPosition.right,
+                                    outlineItems: _outlineItems,
+                                    isOutlineLoading: _isOutlineLoading,
+                                    searchQuery: _searchQuery,
+                                    searchResults: _searchResults,
+                                    isSearching: _isSearching,
+                                    onSearchChanged: _onSearchQueryChanged,
+                                    onClearSearch: () => setState(() {
+                                      _searchQuery = '';
+                                      _searchResults = [];
+                                    }),
+                                    onJumpToPage: _onJumpToPage,
+                                    currentPage: curPage,
+                                    totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                                    documentTitle: _doc.title,
+                                    docId: _doc.id,
+                                    onGetPageContext: _getPageContext,
+                                    onZoomIn: _handleZoomIn,
+                                    onZoomOut: _handleZoomOut,
+                                    onResetZoom: _handleResetZoom,
+                                    onFitWidth: _handleFitWidth,
+                                    onDeleteAnnotation: _handleDeleteAnnotation,
+                                    onAddNewNote: (page) => _openNewNoteDialogForPage(page),
+                                  ),
                                 )
-                              else if (!settings.isRightSidebarOpen && settings.rightDockedTabs.isNotEmpty)
+                              else if (!isRightSidebarOpen && rightDockedTabs.isNotEmpty)
                                 _buildCollapsedRail(SidebarDockPosition.right, settings, isDark, activeTheme),
                             ],
                           ],
@@ -2505,15 +2645,25 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           if (_lastPointerDeviceKind == PointerDeviceKind.stylus ||
               _lastPointerDeviceKind == PointerDeviceKind.invertedStylus) {
             if (details.type == PdfViewerGeneralTapType.longPress) {
-              _handleSecondaryClick(details.localPosition, isTouch: true);
-              return true;
+              if (details.tapOn == PdfViewerPart.background) {
+                _handleSecondaryClick(details.localPosition, isTouch: true);
+                return true;
+              }
+              return false; // Stylus long press on text selects word
             } else if (details.type == PdfViewerGeneralTapType.secondaryTap) {
               _handleSecondaryClick(details.localPosition, isTouch: false);
               return true;
             }
           }
         } else {
-          if (details.type == PdfViewerGeneralTapType.secondaryTap) {
+          if (details.type == PdfViewerGeneralTapType.longPress) {
+            if (details.tapOn == PdfViewerPart.background) {
+              _handleSecondaryClick(details.localPosition, isTouch: true);
+              return true;
+            }
+            // Long press on nonSelectedText / selectedText: let pdfrx select word cleanly
+            return false;
+          } else if (details.type == PdfViewerGeneralTapType.secondaryTap) {
             _handleSecondaryClick(details.localPosition, isTouch: false);
             return true;
           }
@@ -2589,6 +2739,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     return LayoutBuilder(
       builder: (viewerContext, constraints) {
         final isMobile = constraints.maxWidth < 700;
+        _currentViewerSize = Size(constraints.maxWidth, constraints.maxHeight);
         return Stack(
           children: [
             MouseRegion(
@@ -2611,8 +2762,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                       ? renderBox.globalToLocal(event.position)
                       : event.localPosition;
 
+                  _isPointerDown = true;
                   _pointerDownGlobalPosition = event.position;
-                  _pointerDownLocalPosition = stackPos;
+                  _currentPointerLocalPosition = stackPos;
 
                   if (isStylus) {
                     _currentInteractionDeviceKind = PointerDeviceKind.stylus;
@@ -2637,8 +2789,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   // Secondary click (mouse right-click or stylus side-button)
                   final isSecondary = event.buttons == kSecondaryMouseButton || (event.buttons & 32 != 0);
                   if (isSecondary) {
-                    _touchLongPressTimer?.cancel();
-                    _stylusLongPressTimer?.cancel();
                     if (_pdfActiveSelection != null) {
                       setState(() => _pdfActiveSelection = null);
                     }
@@ -2654,43 +2804,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   final hadActiveSelection = _pdfActiveSelection != null ||
                       (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText);
                   _wasSelectionActiveOnPointerDown = hadActiveSelection;
-
-                  if (hadActiveSelection) {
-                    if (_pdfActiveSelection != null) {
-                      setState(() => _pdfActiveSelection = null);
-                    }
-                    if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
-                      _pdfController.textSelectionDelegate.clearTextSelection();
-                    }
-                    _touchLongPressTimer?.cancel();
-                    _stylusLongPressTimer?.cancel();
-                    return;
-                  }
-
-                  if (settings.isStylusMode) {
-                    _touchLongPressTimer?.cancel();
-                    if (isStylus) {
-                      _stylusLongPressTimer?.cancel();
-                      _stylusLongPressTimer = Timer(const Duration(milliseconds: 400), () {
-                        if (!mounted) return;
-                        if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) return;
-                        HapticFeedback.lightImpact();
-                        _handleSecondaryClick(_pointerDownLocalPosition, isTouch: true);
-                      });
-                    }
-                    // In Stylus Mode, finger touch does NOT trigger long press menu
-                  } else {
-                    // Standard touch mode: finger long-press opens menu
-                    if (isTouch) {
-                      _touchLongPressTimer?.cancel();
-                      _touchLongPressTimer = Timer(const Duration(milliseconds: 400), () {
-                        if (!mounted) return;
-                        if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) return;
-                        HapticFeedback.lightImpact();
-                        _handleSecondaryClick(_pointerDownLocalPosition, isTouch: true);
-                      });
-                    }
-                  }
+                  // Note: Do NOT clear text selection here on pointer down,
+                  // allowing selection handles to be freely dragged.
+                  // Tap dismissals are cleanly handled onPointerUp.
                 },
                 onPointerMove: (event) {
                   final isStylus = event.kind == PointerDeviceKind.stylus ||
@@ -2701,23 +2817,41 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                     return;
                   }
 
+                  final renderBox = viewerContext.findRenderObject() as RenderBox?;
+                  final stackPos = renderBox != null
+                      ? renderBox.globalToLocal(event.position)
+                      : event.localPosition;
+
+                  _currentPointerLocalPosition = stackPos;
+
                   if (isStylus) {
                     _lastStylusContactTime = DateTime.now();
-                    if (_pdfController.isReady && _stylusInteractionStartMatrix != null) {
-                      _pdfController.stopInteractiveViewerAnimation();
-                      _pdfController.value = _stylusInteractionStartMatrix!;
+                    if (_edgeScrollTicker == null || !_edgeScrollTicker!.isActive) {
+                      if (_pdfController.isReady && _stylusInteractionStartMatrix != null) {
+                        _pdfController.stopInteractiveViewerAnimation();
+                        _pdfController.value = _stylusInteractionStartMatrix!;
+                      }
                     }
                   } else if (isTouch && settings.isStylusMode) {
                     if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
                       _pdfController.textSelectionDelegate.clearTextSelection();
                     }
                   }
-                  if ((event.position - _pointerDownGlobalPosition).distance > 10) {
-                    _touchLongPressTimer?.cancel();
-                    _stylusLongPressTimer?.cancel();
+
+                  // Trigger edge auto-scroll during text selection or handle dragging
+                  final isSelectingOrHandle = (settings.isStylusMode && isStylus) ||
+                      (event.buttons == kPrimaryMouseButton) ||
+                      _wasSelectionActiveOnPointerDown ||
+                      (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText);
+
+                  if (isSelectingOrHandle) {
+                    _checkAndTriggerEdgeScroll(stackPos, _currentViewerSize);
                   }
                 },
                 onPointerCancel: (event) {
+                  _isPointerDown = false;
+                  _stopEdgeScrollTicker();
+
                   final isStylus = event.kind == PointerDeviceKind.stylus ||
                       event.kind == PointerDeviceKind.invertedStylus;
                   final isTouch = event.kind == PointerDeviceKind.touch;
@@ -2734,11 +2868,12 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                       _pdfController.value = _stylusInteractionStartMatrix!;
                     }
                   }
-                  _touchLongPressTimer?.cancel();
-                  _stylusLongPressTimer?.cancel();
                   _wasSelectionActiveOnPointerDown = false;
                 },
                 onPointerUp: (event) async {
+                  _isPointerDown = false;
+                  _stopEdgeScrollTicker();
+
                   final isStylus = event.kind == PointerDeviceKind.stylus ||
                       event.kind == PointerDeviceKind.invertedStylus;
                   final isTouch = event.kind == PointerDeviceKind.touch;
@@ -2750,7 +2885,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   if (isStylus) {
                     _isStylusContacting = false;
                     _lastStylusContactTime = DateTime.now();
-                    _stylusLongPressTimer?.cancel();
                     _pdfController.stopInteractiveViewerAnimation();
                     if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
                       _pdfController.value = _stylusInteractionStartMatrix!;
@@ -2763,7 +2897,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                       }
                     });
                   }
-                  _touchLongPressTimer?.cancel();
 
                   // In stylus mode, finger touch should never trigger text selection floating bar
                   if (settings.isStylusMode && isTouch) {
@@ -2777,6 +2910,12 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   final isTap = (event.position - _pointerDownGlobalPosition).distance < 10;
                   if (_wasSelectionActiveOnPointerDown && isTap) {
                     _wasSelectionActiveOnPointerDown = false;
+                    if (_pdfActiveSelection != null) {
+                      setState(() => _pdfActiveSelection = null);
+                    }
+                    if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
+                      _pdfController.textSelectionDelegate.clearTextSelection();
+                    }
                     return;
                   }
                   _wasSelectionActiveOnPointerDown = false;

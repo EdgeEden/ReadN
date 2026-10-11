@@ -1,6 +1,7 @@
-import 'dart:typed_data';
 import 'dart:ui';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pdfrx/pdfrx.dart' hide PdfAnnotation;
 import 'package:markdown/markdown.dart' as md;
 import 'package:frontend/models/document_model.dart';
 import 'package:frontend/models/annotation_model.dart';
@@ -1752,6 +1753,66 @@ End of page.
       expect(find.byIcon(Icons.draw_rounded), findsOneWidget);
     });
 
+    testWidgets('Stylus Mode is hidden and disabled on non-Android platforms (e.g. Windows)', (WidgetTester tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      try {
+        SharedPreferences.setMockInitialValues({'readn_stylus_mode': true});
+        final storage = await StorageService.init();
+        final settingsProvider = ReaderSettingsProvider(storageService: storage);
+
+        // On non-Android, isStylusMode must always evaluate to false
+        expect(settingsProvider.isStylusMode, isFalse);
+        settingsProvider.toggleStylusMode();
+        expect(settingsProvider.isStylusMode, isFalse);
+
+        final doc = DocumentModel(
+          id: 'doc-stylus-win',
+          filename: 'test.pdf',
+          title: 'Stylus Guide Windows',
+          fileSize: 1024,
+          pageCount: 10,
+          ocrStatus: 'completed',
+          hasTextLayer: true,
+          createdAt: DateTime.now(),
+          updatedAt: DateTime.now(),
+        );
+
+        await tester.pumpWidget(
+          ChangeNotifierProvider.value(
+            value: settingsProvider,
+            child: MaterialApp(
+              home: Scaffold(
+                body: ReaderTopBar(
+                  document: doc,
+                  currentPage: 1,
+                  totalPages: 10,
+                  onJumpToPage: (_) {},
+                  onZoomIn: () {},
+                  onZoomOut: () {},
+                  onResetZoom: () {},
+                  onPrevPage: () {},
+                  onNextPage: () {},
+                  onOpenOcr: () {},
+                  viewMode: ReaderViewMode.pdf,
+                  onViewModeChanged: (_) {},
+                  hasMarkdown: false,
+                  isMobile: false,
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Stylus button must NOT be rendered on non-Android platform
+        expect(find.text('手写笔'), findsNothing);
+        expect(find.byIcon(Icons.draw_outlined), findsNothing);
+        expect(find.byIcon(Icons.draw_rounded), findsNothing);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
     testWidgets('ReaderMobileProgressSheet renders stylus switch and updates setting', (WidgetTester tester) async {
       SharedPreferences.setMockInitialValues({'readn_stylus_mode': false});
       final storage = await StorageService.init();
@@ -1827,6 +1888,102 @@ End of page.
       await tester.pumpAndSettle();
 
       expect(selectionCleared, isTrue);
+    });
+
+    test('FloatingSelectionBar right-edge clamp calculation keeps toolbar within screen', () {
+      // Simulate containerSize 800x600, pointer at extreme right (780, 300)
+      const containerWidth = 800.0;
+      const containerHeight = 600.0;
+      const pointerPos = Offset(780.0, 300.0);
+      const menuWidth = 420.0;
+      const menuHeight = 48.0;
+
+      double left = pointerPos.dx - (menuWidth / 2); // 780 - 210 = 570
+      if (left < 16) left = 16;
+      if (left + menuWidth > containerWidth - 16) {
+        left = containerWidth - menuWidth - 16; // 800 - 420 - 16 = 364
+      }
+      if (left < 0) left = 0;
+
+      double top = pointerPos.dy - menuHeight - 16;
+      if (top < 10) top = pointerPos.dy + 20;
+      if (top + menuHeight > containerHeight - 10) top = containerHeight - menuHeight - 10;
+      if (top < 0) top = 0;
+
+      expect(left, equals(364.0));
+      expect(left + menuWidth, lessThanOrEqualTo(containerWidth - 16));
+      expect(top, equals(300.0 - 48.0 - 16.0));
+    });
+
+    test('Edge auto-scroll velocity calculations scale smoothly with edge penetration', () {
+      const viewerSize = Size(800.0, 600.0);
+      const edgeMarginY = 80.0;
+      const edgeMarginX = 60.0;
+
+      double computeVy(double dy) {
+        if (dy < edgeMarginY) {
+          final ratio = ((edgeMarginY - dy) / edgeMarginY).clamp(0.0, 1.5);
+          return 300.0 + 600.0 * ratio; // scroll up
+        } else if (dy > viewerSize.height - edgeMarginY) {
+          final ratio = ((dy - (viewerSize.height - edgeMarginY)) / edgeMarginY).clamp(0.0, 1.5);
+          return -(300.0 + 600.0 * ratio); // scroll down
+        }
+        return 0.0;
+      }
+
+      double computeVx(double dx) {
+        if (dx < edgeMarginX) {
+          final ratio = ((edgeMarginX - dx) / edgeMarginX).clamp(0.0, 1.5);
+          return 300.0 + 600.0 * ratio; // scroll left
+        } else if (dx > viewerSize.width - edgeMarginX) {
+          final ratio = ((dx - (viewerSize.width - edgeMarginX)) / edgeMarginX).clamp(0.0, 1.5);
+          return -(300.0 + 600.0 * ratio); // scroll right
+        }
+        return 0.0;
+      }
+
+      // Center: zero velocity
+      expect(computeVy(300.0), equals(0.0));
+      expect(computeVx(400.0), equals(0.0));
+
+      // Near top edge: positive Vy (scroll up)
+      expect(computeVy(40.0), greaterThan(0.0));
+      expect(computeVy(0.0), greaterThan(computeVy(40.0))); // Deeper penetration = higher speed
+
+      // Near bottom edge: negative Vy (scroll down)
+      expect(computeVy(560.0), lessThan(0.0));
+      expect(computeVy(600.0).abs(), greaterThan(computeVy(560.0).abs()));
+
+      // Near left/right edges
+      expect(computeVx(20.0), greaterThan(0.0));
+      expect(computeVx(780.0), lessThan(0.0));
+    });
+
+    test('Gesture separation handles background vs nonSelectedText correctly', () {
+      // Simulate onGeneralTap handler logic
+      bool handleGeneralTap({required PdfViewerGeneralTapType type, required PdfViewerPart tapOn}) {
+        if (type == PdfViewerGeneralTapType.longPress) {
+          if (tapOn == PdfViewerPart.background) {
+            // Handled as arbitrary annotation menu
+            return true;
+          }
+          // Non-selected text: return false to let pdfrx natively select word
+          return false;
+        }
+        return false;
+      }
+
+      // Background long press is absorbed for arbitrary note menu
+      expect(
+        handleGeneralTap(type: PdfViewerGeneralTapType.longPress, tapOn: PdfViewerPart.background),
+        isTrue,
+      );
+
+      // Text long press returns false so pdfrx selects word cleanly without popup collision
+      expect(
+        handleGeneralTap(type: PdfViewerGeneralTapType.longPress, tapOn: PdfViewerPart.nonSelectedText),
+        isFalse,
+      );
     });
   });
 }

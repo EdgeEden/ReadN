@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
@@ -46,7 +47,8 @@ class ReaderSettingsProvider extends ChangeNotifier {
   ReaderSidebarTab _activeRightTab = ReaderSidebarTab.aiChat;
 
   ReaderSettingsProvider({required this.storageService}) {
-    _isStylusMode = storageService.getStylusMode();
+    final isAndroid = !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+    _isStylusMode = isAndroid && storageService.getStylusMode();
     final savedMode = storageService.getReadingMode();
     switch (savedMode) {
       case 'sepia':
@@ -65,7 +67,7 @@ class ReaderSettingsProvider extends ChangeNotifier {
   bool get isRightSidebarOpen => _isRightSidebarOpen;
   bool get isSidebarOpen => _isRightSidebarOpen; // For backward compatibility
   bool get showAnnotations => _showAnnotations;
-  bool get isStylusMode => _isStylusMode;
+  bool get isStylusMode => (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) && _isStylusMode;
   double get zoomScale => _zoomScale;
   Axis get scrollDirection => _scrollDirection;
 
@@ -179,18 +181,23 @@ class ReaderSettingsProvider extends ChangeNotifier {
   }
 
   void setStylusMode(bool enabled) {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
     _isStylusMode = enabled;
     storageService.setStylusMode(enabled);
     notifyListeners();
   }
 
   void toggleStylusMode() {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
     setStylusMode(!_isStylusMode);
   }
 
   void setZoomScale(double zoom) {
-    _zoomScale = zoom.clamp(0.5, 4.0);
-    notifyListeners();
+    final clamped = zoom.clamp(0.5, 4.0);
+    if ((_zoomScale - clamped).abs() > 0.01) {
+      _zoomScale = clamped;
+      notifyListeners();
+    }
   }
 
   void setScrollDirection(Axis direction) {

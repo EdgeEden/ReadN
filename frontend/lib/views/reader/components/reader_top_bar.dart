@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../models/document_model.dart';
@@ -143,9 +144,11 @@ class ReaderTopBar extends StatelessWidget {
           _buildViewModeSwitcher(context, theme, isDark),
           SizedBox(width: isMobile ? 6 : 10),
 
-          // 4. Stylus Mode Button (手笔分离与防误触)
-          _buildStylusButton(context, theme, isDark, settings),
-          SizedBox(width: isMobile ? 6 : 10),
+          // 4. Stylus Mode Button (手笔分离与防误触) - 仅在安卓端显示
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) ...[
+            _buildStylusButton(context, theme, isDark, settings),
+            SizedBox(width: isMobile ? 6 : 10),
+          ],
 
           // 5. OCR Status & Action Button
           _buildOcrButton(context, theme, isDark),
