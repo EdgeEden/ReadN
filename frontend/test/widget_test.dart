@@ -1538,6 +1538,8 @@ End of page.
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
       );
+      expect(noteAnno.isNote, isTrue);
+      expect(cardAnno.isCard, isTrue);
 
       await tester.pumpWidget(
         MaterialApp(
