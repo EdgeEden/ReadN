@@ -72,6 +72,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   Uri? _pdfUri;
   bool _useUriSource = false;
   bool _isLoadingPdf = true;
+  double? _downloadProgress;
+  int? _downloadReceived;
+  int? _downloadTotal;
   String? _loadError;
   bool _isOcrBannerDismissed = false;
   OcrStatusInfo? _ocrStatusInfo;
@@ -302,32 +305,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   Future<void> _fetchPdfData() async {
     final docProvider = context.read<DocumentProvider>();
-    final storage = docProvider.storageService;
-
-    // 1. In Web environment, always prefer HTTP Range URI streaming.
-    // This avoids downloading huge PDFs (e.g. 100MB+) into JavaScript heap and eliminates browser hang/OOM.
-    if (kIsWeb) {
-      try {
-        final rawUrl = _doc.getFileUrl(storage.getBaseUrl());
-        final separator = rawUrl.contains('?') ? '&' : '?';
-        final fileUrl = '$rawUrl${separator}v=${_doc.updatedAt.millisecondsSinceEpoch}';
-        final uri = Uri.parse(fileUrl);
-        if (mounted) {
-          setState(() {
-            _pdfUri = uri;
-            _useUriSource = true;
-            _isLoadingPdf = false;
-            _loadError = null;
-          });
-        }
-        return;
-      } catch (e) {
-        debugPrint('Error preparing PDF URI: $e');
-      }
-    }
-
-    // 2. Cache-first check on desktop/mobile: if cached, load immediately without network download
     final docCache = docProvider.docCacheService;
+
+    // 1. Universal Cache-First check (Web IndexedDB / Desktop & Mobile local disk)
+    // If the document was previously opened or uploaded, load immediately with zero network delay!
     try {
       final cachedBytes = await docCache.getPdf(_doc.id, expectedChecksum: _doc.checksum);
       if (cachedBytes != null && cachedBytes.isNotEmpty) {
@@ -345,8 +326,55 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       debugPrint('Error checking local PDF cache: $e');
     }
 
-    // 3. Fallback for remote streaming on desktop/mobile
+    // 2. Cache miss: download full file stream with progress callback and store in cache
+    // Downloading in a single HTTP stream is vastly faster than hundreds of 64KB range requests,
+    // avoids blank pages during rendering, and populates IndexedDB / disk cache for next time.
+    if (_doc.fileSize <= 60 * 1024 * 1024) {
+      try {
+        if (mounted) {
+          setState(() {
+            _isLoadingPdf = true;
+            _downloadProgress = 0.0;
+            _downloadReceived = 0;
+            _downloadTotal = _doc.fileSize;
+            _loadError = null;
+          });
+        }
+
+        final bytes = await docProvider.apiService.downloadDocumentBytes(
+          _doc.id,
+          onProgress: (received, total) {
+            if (mounted) {
+              setState(() {
+                _downloadReceived = received;
+                _downloadTotal = total;
+                _downloadProgress = total > 0 ? (received / total).clamp(0.0, 1.0) : null;
+              });
+            }
+          },
+        );
+
+        // Store into persistent cache (IndexedDB on Web, Disk on mobile/desktop)
+        await docCache.savePdf(_doc.id, bytes, checksum: _doc.checksum);
+
+        if (mounted) {
+          setState(() {
+            _pdfBytes = bytes;
+            _useUriSource = false;
+            _isLoadingPdf = false;
+            _loadError = null;
+          });
+        }
+        return;
+      } catch (e) {
+        debugPrint('Single-stream download failed, falling back to URI streaming: $e');
+      }
+    }
+
+    // 3. Fallback for massive files (>60MB) or if direct download failed:
+    // Fall back to HTTP Range URI streaming
     try {
+      final storage = docProvider.storageService;
       final rawUrl = _doc.getFileUrl(storage.getBaseUrl());
       final separator = rawUrl.contains('?') ? '&' : '?';
       final fileUrl = '$rawUrl${separator}v=${_doc.updatedAt.millisecondsSinceEpoch}';
@@ -982,7 +1010,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             child: Row(
               children: [
-                const Icon(Icons.push_pin_rounded, size: 16, color: Color(0xFF6366F1)),
+                const Icon(Icons.edit_note_rounded, size: 16, color: Color(0xFF6366F1)),
                 const SizedBox(width: 10),
                 Text(
                   '在此处添加批注',
@@ -1057,7 +1085,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                 normalizedRect: menuState.normalizedRect,
               );
             },
-            icon: const Icon(Icons.push_pin_rounded, size: 16, color: Color(0xFF6366F1)),
+            icon: const Icon(Icons.edit_note_rounded, size: 16, color: Color(0xFF6366F1)),
             label: Text('批注', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: textColor)),
             style: TextButton.styleFrom(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -1330,7 +1358,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             SnackBar(
               content: Row(
                 children: [
-                  const Icon(Icons.push_pin_rounded, color: Color(0xFF818CF8), size: 18),
+                  const Icon(Icons.edit_note_rounded, color: Color(0xFF818CF8), size: 18),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -1606,9 +1634,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               ],
             ),
             child: Icon(
-              isCard
-                  ? Icons.style_rounded
-                  : (anno.isPointAnnotation ? Icons.push_pin_rounded : Icons.edit_note_rounded),
+              isCard ? Icons.style_rounded : Icons.edit_note_rounded,
               size: 14.5,
               color: color,
             ),
@@ -2110,7 +2136,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                                           children: [
                                             if (_isLoadingPdf)
                                               Center(
-                                                child: _buildPdfLoadingWidget(activeTheme, isDark),
+                                                child: _buildPdfLoadingWidget(
+                                                  activeTheme,
+                                                  isDark,
+                                                  progress: _downloadProgress,
+                                                  received: _downloadReceived,
+                                                  total: _downloadTotal,
+                                                ),
                                               )
                                             else if (_loadError != null)
                                               Center(

@@ -43,118 +43,182 @@ class _BookshelfViewState extends State<BookshelfView> {
     final isDark = readerSettings.readingMode == ReadingMode.dark;
     final isConnected = docProvider.isBackendConnected;
     final docs = docProvider.documents;
+    final isMobile = MediaQuery.of(context).size.width < 600;
 
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF4F46E5), Color(0xFF06B6D4)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Icon(Icons.menu_book_rounded, color: Colors.white, size: 20),
-            ),
-            const SizedBox(width: 12),
-            const Text(
-              'ReadN',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20, letterSpacing: -0.5),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.primary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                'Cloud Sync',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: theme.colorScheme.primary),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Tooltip(
-              message: '当前版本: ${AppVersion.displayVersion} (构建: ${AppVersion.buildNumber})',
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+        titleSpacing: isMobile ? 8 : 16,
+        title: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: EdgeInsets.all(isMobile ? 5 : 8),
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.06),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.15),
-                    width: 0.8,
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF4F46E5), Color(0xFF06B6D4)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(isMobile ? 8 : 10),
+                ),
+                child: Icon(Icons.menu_book_rounded, color: Colors.white, size: isMobile ? 17 : 20),
+              ),
+              SizedBox(width: isMobile ? 7 : 12),
+              Text(
+                'ReadN',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: isMobile ? 18 : 20,
+                  letterSpacing: -0.5,
+                ),
+              ),
+              if (!isMobile) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    'Cloud Sync',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: theme.colorScheme.primary),
                   ),
                 ),
-                child: Text(
-                  AppVersion.displayVersion,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.65),
-                    letterSpacing: 0.2,
+              ],
+              SizedBox(width: isMobile ? 5 : 8),
+              Tooltip(
+                message: '当前版本: ${AppVersion.displayVersion} (构建: ${AppVersion.buildNumber})',
+                child: Container(
+                  padding: EdgeInsets.symmetric(horizontal: isMobile ? 4 : 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.06),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.15),
+                      width: 0.8,
+                    ),
+                  ),
+                  child: Text(
+                    AppVersion.displayVersion,
+                    style: TextStyle(
+                      fontSize: isMobile ? 9.5 : 11,
+                      fontWeight: FontWeight.w600,
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.65),
+                      letterSpacing: 0.2,
+                    ),
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
         actions: [
-          // Cloud Status Pill
-          InkWell(
-            borderRadius: BorderRadius.circular(20),
-            onTap: () {
-              showDialog(
-                context: context,
-                builder: (_) => const ServerSettingsDialog(),
-              );
-            },
-            child: Container(
-              margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: isConnected
-                    ? Colors.green.withValues(alpha: 0.1)
-                    : Colors.red.withValues(alpha: 0.1),
-                border: Border.all(
-                  color: isConnected ? Colors.green.shade300 : Colors.red.shade300,
-                  width: 1,
-                ),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: isConnected ? Colors.green : Colors.red,
-                      shape: BoxShape.circle,
+          // Cloud Status: Compact icon on mobile, full pill on desktop
+          if (isMobile)
+            Tooltip(
+              message: isConnected ? '云端已连接 (点击配置服务器)' : '未连接云端 (点击配置服务器)',
+              child: InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: () {
+                  showDialog(
+                    context: context,
+                    builder: (_) => const ServerSettingsDialog(),
+                  );
+                },
+                child: Container(
+                  margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 3),
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: isConnected
+                        ? Colors.green.withValues(alpha: 0.12)
+                        : Colors.red.withValues(alpha: 0.12),
+                    border: Border.all(
+                      color: isConnected ? Colors.green.shade300 : Colors.red.shade300,
+                      width: 1,
                     ),
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    isConnected ? '云端已连接' : '未连接云端',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                  child: Stack(
+                    alignment: Alignment.topRight,
+                    children: [
+                      Icon(
+                        Icons.cloud_outlined,
+                        size: 16,
+                        color: isConnected ? Colors.green.shade800 : Colors.red.shade800,
+                      ),
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        child: Container(
+                          width: 5,
+                          height: 5,
+                          decoration: BoxDecoration(
+                            color: isConnected ? Colors.green : Colors.red,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else
+            // Desktop/Tablet Cloud Status Pill
+            InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () {
+                showDialog(
+                  context: context,
+                  builder: (_) => const ServerSettingsDialog(),
+                );
+              },
+              child: Container(
+                margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isConnected
+                      ? Colors.green.withValues(alpha: 0.1)
+                      : Colors.red.withValues(alpha: 0.1),
+                  border: Border.all(
+                    color: isConnected ? Colors.green.shade300 : Colors.red.shade300,
+                    width: 1,
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: isConnected ? Colors.green : Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      isConnected ? '云端已连接' : '未连接云端',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: isConnected ? Colors.green.shade800 : Colors.red.shade800,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Icon(
+                      Icons.settings_outlined,
+                      size: 14,
                       color: isConnected ? Colors.green.shade800 : Colors.red.shade800,
                     ),
-                  ),
-                  const SizedBox(width: 4),
-                  Icon(
-                    Icons.settings_outlined,
-                    size: 14,
-                    color: isConnected ? Colors.green.shade800 : Colors.red.shade800,
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
           // Theme Switcher Menu
           PopupMenuButton<ReadingMode>(
             tooltip: '切换阅读主题',
@@ -220,7 +284,7 @@ class _BookshelfViewState extends State<BookshelfView> {
             icon: const Icon(Icons.refresh_rounded),
             onPressed: () => docProvider.loadDocuments(),
           ),
-          const SizedBox(width: 8),
+          SizedBox(width: isMobile ? 4 : 8),
         ],
       ),
       body: LayoutBuilder(

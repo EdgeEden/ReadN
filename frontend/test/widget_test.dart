@@ -24,6 +24,7 @@ import 'package:frontend/views/reader/components/reader_sidebar.dart';
 import 'package:frontend/views/reader/components/reader_top_bar.dart';
 import 'package:frontend/views/reader/components/floating_selection_bar.dart';
 import 'package:frontend/views/reader/components/note_editor_dialog.dart';
+import 'package:frontend/views/bookshelf/bookshelf_view.dart';
 import 'package:frontend/theme/app_theme.dart';
 import 'package:frontend/services/api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1643,7 +1644,41 @@ End of page.
         ),
       );
 
-      expect(find.text('(已在第 4 页图钉锚定，点击徽标可随时回顾)'), findsOneWidget);
+      expect(find.text('(已在第 4 页位置锚定，点击徽标可随时回顾)'), findsOneWidget);
+    });
+
+    testWidgets('BookshelfView top bar mobile layout renders without overflow', (WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final storage = StorageService(prefs);
+      final apiService = ApiService(storageService: storage);
+      final docCache = DocCacheService();
+      final docProvider = DocumentProvider(apiService: apiService, storageService: storage, docCacheService: docCache);
+      final settingsProvider = ReaderSettingsProvider(storageService: storage);
+
+      tester.view.physicalSize = const Size(360, 780);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider.value(value: docProvider),
+            ChangeNotifierProvider.value(value: settingsProvider),
+          ],
+          child: const MaterialApp(
+            home: BookshelfView(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Top bar title is rendered
+      expect(find.text('ReadN'), findsOneWidget);
+      // On mobile (< 600), the 75px wide "Cloud Sync" text is omitted to avoid overflow
+      expect(find.text('Cloud Sync'), findsNothing);
+      // Compact cloud icon button exists
+      expect(tester.takeException(), isNull);
     });
   });
 }

@@ -875,7 +875,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
           value: 'note',
           child: Row(
             children: [
-              const Icon(Icons.push_pin_rounded, size: 16, color: Color(0xFF6366F1)),
+              const Icon(Icons.edit_note_rounded, size: 16, color: Color(0xFF6366F1)),
               const SizedBox(width: 8),
               Text('在第 $pageNumber 页添加批注', style: const TextStyle(fontSize: 13)),
             ],

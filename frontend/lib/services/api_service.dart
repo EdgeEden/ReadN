@@ -139,6 +139,28 @@ class ApiService {
     return '$cleanBase/api/documents/$docId/file';
   }
 
+  Future<Uint8List> downloadDocumentBytes(
+    String docId, {
+    void Function(int received, int total)? onProgress,
+  }) async {
+    final request = http.Request('GET', _uri('/api/documents/$docId/file'));
+    final streamedResponse = await _client.send(request);
+    if (streamedResponse.statusCode != 200 && streamedResponse.statusCode != 206) {
+      throw Exception('Failed to download document: ${streamedResponse.statusCode}');
+    }
+    final total = streamedResponse.contentLength ?? 0;
+    int received = 0;
+    final bytesBuilder = BytesBuilder(copy: false);
+    await for (final chunk in streamedResponse.stream) {
+      bytesBuilder.add(chunk);
+      received += chunk.length;
+      if (onProgress != null && total > 0) {
+        onProgress(received, total);
+      }
+    }
+    return bytesBuilder.takeBytes();
+  }
+
   // Annotations
   Future<List<PdfAnnotation>> getAnnotations(String docId) async {
     final res = await _get(_uri('/api/documents/$docId/annotations'));
