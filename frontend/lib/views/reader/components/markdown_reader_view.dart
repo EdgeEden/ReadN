@@ -801,6 +801,118 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     );
   }
 
+  void _openNewNoteDialogForPage(int pageNumber) {
+    final tempAnno = PdfAnnotation(
+      id: _uuid.v4(),
+      docId: widget.document.id,
+      type: "note",
+      pageNumber: pageNumber,
+      colorHex: "#6366F1",
+      rects: const [],
+      selectedText: "",
+      noteContent: "",
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    showDialog(
+      context: context,
+      builder: (_) => NoteEditorDialog(
+        annotation: tempAnno,
+        onSave: (saved) {
+          context.read<AnnotationProvider>().addAnnotation(saved);
+          context.read<DocumentProvider>().updateAnnotationCount(widget.document.id, 1);
+        },
+        onDelete: () {},
+      ),
+    );
+  }
+
+  void _openNewCardDialogForPage(int pageNumber) {
+    final tempAnno = PdfAnnotation(
+      id: _uuid.v4(),
+      docId: widget.document.id,
+      type: "card",
+      pageNumber: pageNumber,
+      colorHex: "#8B5CF6",
+      rects: const [],
+      selectedText: "",
+      noteContent: "",
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    showDialog(
+      context: context,
+      builder: (_) => KnowledgeCardDialog(
+        annotation: tempAnno,
+        pageNumber: pageNumber,
+        docId: widget.document.id,
+        startInEditMode: true,
+        onSave: (saved) {
+          context.read<AnnotationProvider>().addAnnotation(saved);
+          context.read<DocumentProvider>().updateAnnotationCount(widget.document.id, 1);
+        },
+        onDelete: () {},
+        onJumpToPage: (p) => jumpToPage(p),
+      ),
+    );
+  }
+
+  void _showMarkdownCardContextMenu(BuildContext context, Offset globalPos, int pageNumber) async {
+    final RenderBox overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final RelativeRect position = RelativeRect.fromRect(
+      Rect.fromLTWH(globalPos.dx, globalPos.dy, 0, 0),
+      Offset.zero & overlay.size,
+    );
+
+    final selected = await showMenu<String>(
+      context: context,
+      position: position,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      items: [
+        PopupMenuItem<String>(
+          value: 'note',
+          child: Row(
+            children: [
+              const Icon(Icons.push_pin_rounded, size: 16, color: Color(0xFF6366F1)),
+              const SizedBox(width: 8),
+              Text('在第 $pageNumber 页添加批注', style: const TextStyle(fontSize: 13)),
+            ],
+          ),
+        ),
+        PopupMenuItem<String>(
+          value: 'card',
+          child: Row(
+            children: [
+              const Icon(Icons.style_rounded, size: 16, color: Color(0xFF8B5CF6)),
+              const SizedBox(width: 8),
+              Text('在第 $pageNumber 页添加知识卡片', style: const TextStyle(fontSize: 13)),
+            ],
+          ),
+        ),
+        PopupMenuItem<String>(
+          value: 'ai',
+          child: Row(
+            children: [
+              const Icon(Icons.auto_awesome_rounded, size: 16, color: Color(0xFF0EA5E9)),
+              const SizedBox(width: 8),
+              Text('向 AI 提问第 $pageNumber 页', style: const TextStyle(fontSize: 13)),
+            ],
+          ),
+        ),
+      ],
+    );
+
+    if (selected == 'note') {
+      _openNewNoteDialogForPage(pageNumber);
+    } else if (selected == 'card') {
+      _openNewCardDialogForPage(pageNumber);
+    } else if (selected == 'ai') {
+      widget.onAskAi?.call('提问关于第 $pageNumber 页的内容', pageNumber);
+    }
+  }
+
   void _handleHighlightLatex(
     String rawLatex,
     String colorHex, {
@@ -1334,75 +1446,141 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
     return Center(
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: cardMaxWidth),
-        child: Container(
-          key: cardKey,
-          margin: EdgeInsets.only(bottom: isMobile ? 16 : 24),
-          decoration: BoxDecoration(
-            color: cardBg,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: isDark ? const Color(0xFF334155) : (isSepia ? const Color(0xFFE2D6BC) : const Color(0xFFE2E8F0)),
-              width: 1,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: isDark ? 0.35 : (isSepia ? 0.05 : 0.04)),
-                blurRadius: 12,
-                offset: const Offset(0, 4),
+        child: GestureDetector(
+          onSecondaryTapUp: (details) {
+            _showMarkdownCardContextMenu(context, details.globalPosition, chunk.pageNumber);
+          },
+          child: Container(
+            key: cardKey,
+            margin: EdgeInsets.only(bottom: isMobile ? 16 : 24),
+            decoration: BoxDecoration(
+              color: cardBg,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isDark ? const Color(0xFF334155) : (isSepia ? const Color(0xFFE2D6BC) : const Color(0xFFE2E8F0)),
+                width: 1,
               ),
-            ],
-          ),
-          clipBehavior: Clip.antiAlias,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Page Header Tab
-              Container(
-                padding: EdgeInsets.symmetric(horizontal: isMobile ? 12 : 20, vertical: 8),
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? Colors.white.withValues(alpha: 0.03)
-                      : (isSepia ? const Color(0xFFEFE4CC) : const Color(0xFFF8FAFC)),
-                  border: Border(
-                    bottom: BorderSide(
-                      color: isDark
-                          ? const Color(0xFF334155)
-                          : (isSepia ? const Color(0xFFE2D6BC) : const Color(0xFFE2E8F0)),
-                      width: 0.8,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.35 : (isSepia ? 0.05 : 0.04)),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Page Header Tab
+                Container(
+                  padding: EdgeInsets.symmetric(horizontal: isMobile ? 12 : 20, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? Colors.white.withValues(alpha: 0.03)
+                        : (isSepia ? const Color(0xFFEFE4CC) : const Color(0xFFF8FAFC)),
+                    border: Border(
+                      bottom: BorderSide(
+                        color: isDark
+                            ? const Color(0xFF334155)
+                            : (isSepia ? const Color(0xFFE2D6BC) : const Color(0xFFE2E8F0)),
+                        width: 0.8,
+                      ),
                     ),
                   ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.primary.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        (index + 1 < _chunks.length && _chunks[index + 1].pageNumber > chunk.pageNumber + 1)
-                            ? '第 ${chunk.pageNumber} - ${_chunks[index + 1].pageNumber - 1} 页'
-                            : '第 ${chunk.pageNumber} 页',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: theme.colorScheme.primary,
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primary.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          (index + 1 < _chunks.length && _chunks[index + 1].pageNumber > chunk.pageNumber + 1)
+                              ? '第 ${chunk.pageNumber} - ${_chunks[index + 1].pageNumber - 1} 页'
+                              : '第 ${chunk.pageNumber} 页',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: theme.colorScheme.primary,
+                          ),
                         ),
                       ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      '${index + 1} / ${_chunks.length}',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: isDark ? Colors.grey.shade500 : Colors.grey.shade400,
-                        fontWeight: FontWeight.w600,
+                      const SizedBox(width: 8),
+                      Tooltip(
+                        message: '在第 ${chunk.pageNumber} 页添加批注笔记',
+                        child: InkWell(
+                          onTap: () => _openNewNoteDialogForPage(chunk.pageNumber),
+                          borderRadius: BorderRadius.circular(6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.2 : 0.1),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.3)),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.edit_note_rounded, size: 12, color: Color(0xFF6366F1)),
+                                SizedBox(width: 3),
+                                Text(
+                                  '记批注',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF6366F1),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 6),
+                      Tooltip(
+                        message: '在第 ${chunk.pageNumber} 页新建知识卡片',
+                        child: InkWell(
+                          onTap: () => _openNewCardDialogForPage(chunk.pageNumber),
+                          borderRadius: BorderRadius.circular(6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF8B5CF6).withValues(alpha: isDark ? 0.2 : 0.1),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: const Color(0xFF8B5CF6).withValues(alpha: 0.3)),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.style_rounded, size: 12, color: Color(0xFF8B5CF6)),
+                                SizedBox(width: 3),
+                                Text(
+                                  '加卡片',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF8B5CF6),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '${index + 1} / ${_chunks.length}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isDark ? Colors.grey.shade500 : Colors.grey.shade400,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
 
               // Page Cards & Notes summary strip if present on this page
               if (pageCards.isNotEmpty || pageNotes.isNotEmpty)
@@ -1494,6 +1672,38 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                           ),
                         );
                       }),
+                      Tooltip(
+                        message: '在第 ${chunk.pageNumber} 页添加新批注',
+                        child: InkWell(
+                          onTap: () => _openNewNoteDialogForPage(chunk.pageNumber),
+                          borderRadius: BorderRadius.circular(6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.primary.withValues(alpha: isDark ? 0.2 : 0.08),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: theme.colorScheme.primary.withValues(alpha: 0.3),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.add_rounded, size: 12, color: theme.colorScheme.primary),
+                                const SizedBox(width: 2),
+                                Text(
+                                  '记批注',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -1675,6 +1885,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
               ),
             ],
           ),
+        ),
         ),
       ),
     );

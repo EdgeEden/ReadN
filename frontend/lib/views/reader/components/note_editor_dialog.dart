@@ -146,7 +146,9 @@ class _NoteEditorDialogState extends State<NoteEditorDialog> {
                               Text(
                                 widget.annotation.selectedText.trim().isNotEmpty
                                     ? '“${widget.annotation.selectedText.trim()}”'
-                                    : '(未绑定特定引文，批注图标停泊于本页开头)',
+                                    : (widget.annotation.rects.isNotEmpty
+                                        ? '(已在第 ${widget.annotation.pageNumber} 页图钉锚定，点击徽标可随时回顾)'
+                                        : '(第 ${widget.annotation.pageNumber} 页独立批注笔记，展示于页面摘要栏)'),
                                 style: TextStyle(
                                   fontSize: 12.5,
                                   fontStyle: FontStyle.italic,

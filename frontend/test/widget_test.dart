@@ -23,6 +23,7 @@ import 'package:frontend/views/reader/components/reader_mobile_sheet.dart';
 import 'package:frontend/views/reader/components/reader_sidebar.dart';
 import 'package:frontend/views/reader/components/reader_top_bar.dart';
 import 'package:frontend/views/reader/components/floating_selection_bar.dart';
+import 'package:frontend/views/reader/components/note_editor_dialog.dart';
 import 'package:frontend/theme/app_theme.dart';
 import 'package:frontend/services/api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1568,6 +1569,135 @@ End of page.
       await tester.tap(find.byKey(const ValueKey('card_badge')));
       await tester.pump();
       expect(cardClicked, isTrue);
+    });
+
+    test('Arbitrary point annotation identification and attributes', () {
+      final pointAnno = PdfAnnotation(
+        id: 'point-1',
+        docId: 'doc-123',
+        type: 'note',
+        pageNumber: 3,
+        colorHex: '#6366F1',
+        rects: [
+          const NormalizedRect(x: 0.45, y: 0.65, width: 0.02, height: 0.02),
+        ],
+        selectedText: '',
+        noteContent: 'Chart observation note',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      expect(pointAnno.isPointAnnotation, isTrue);
+      expect(pointAnno.isNote, isTrue);
+      expect(pointAnno.isCard, isFalse);
+      expect(pointAnno.isHighlight, isFalse);
+      expect(pointAnno.displayTitle, 'Chart observation note');
+
+      final emptyPointAnno = pointAnno.copyWith(noteContent: '');
+      expect(emptyPointAnno.displayTitle, '批注笔记 (P.3)');
+
+      final normalAnno = PdfAnnotation(
+        id: 'text-1',
+        docId: 'doc-123',
+        type: 'note',
+        pageNumber: 3,
+        colorHex: '#6366F1',
+        rects: [
+          const NormalizedRect(x: 0.1, y: 0.2, width: 0.6, height: 0.04),
+        ],
+        selectedText: 'Selected text here',
+        noteContent: 'Text note',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      expect(normalAnno.isPointAnnotation, isFalse);
+      expect(normalAnno.displayTitle, 'Text note');
+    });
+
+    testWidgets('ReaderTopBar renders pin mode button and responds to tap', (tester) async {
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      final doc = DocumentModel(
+        id: 'doc-topbar',
+        filename: 'test.pdf',
+        title: 'TopBar Test',
+        fileSize: 1024,
+        pageCount: 5,
+        hasTextLayer: true,
+        hasMarkdown: false,
+        ocrStatus: 'none',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      bool pinModeToggled = false;
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider.value(value: settingsProvider),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: ReaderTopBar(
+                document: doc,
+                currentPage: 1,
+                totalPages: 5,
+                isMobile: false,
+                isPinMode: false,
+                onJumpToPage: (_) {},
+                onZoomIn: () {},
+                onZoomOut: () {},
+                onResetZoom: () {},
+                onPrevPage: () {},
+                onNextPage: () {},
+                onTogglePinMode: () {
+                  pinModeToggled = true;
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.byIcon(Icons.push_pin_outlined), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.push_pin_outlined));
+      await tester.pump();
+      expect(pinModeToggled, isTrue);
+    });
+
+    testWidgets('NoteEditorDialog displays point annotation anchor prompt correctly', (tester) async {
+      final pointAnno = PdfAnnotation(
+        id: 'point-dlg',
+        docId: 'doc-123',
+        type: 'note',
+        pageNumber: 4,
+        colorHex: '#6366F1',
+        rects: [
+          const NormalizedRect(x: 0.5, y: 0.5, width: 0.02, height: 0.02),
+        ],
+        selectedText: '',
+        noteContent: 'Point note on graphic',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: NoteEditorDialog(
+              annotation: pointAnno,
+              onSave: (_) {},
+              onDelete: () {},
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('(已在第 4 页图钉锚定，点击徽标可随时回顾)'), findsOneWidget);
     });
   });
 }

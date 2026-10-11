@@ -73,6 +73,7 @@ class PdfAnnotation {
   bool get isCard => type == "card";
   bool get isNote => type == "note" || (type != "card" && noteContent.trim().isNotEmpty);
   bool get isHighlight => type == "highlight" && !isNote;
+  bool get isPointAnnotation => rects.isNotEmpty && rects.first.width <= 0.05 && rects.first.height <= 0.05;
 
   String get displayTitle {
     if (noteContent.trim().isNotEmpty) {

@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:pdfrx/pdfrx.dart' hide PdfAnnotation;
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
@@ -38,6 +40,20 @@ class PdfActiveSelectionState {
   });
 }
 
+class ArbitraryPointMenuState {
+  final int pageNumber;
+  final NormalizedRect normalizedRect;
+  final Offset position;
+  final bool isTouch;
+
+  const ArbitraryPointMenuState({
+    required this.pageNumber,
+    required this.normalizedRect,
+    required this.position,
+    this.isTouch = false,
+  });
+}
+
 class PdfReaderScreen extends StatefulWidget {
   final DocumentModel document;
 
@@ -70,6 +86,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   final GlobalKey<MarkdownReaderViewState> _markdownKey = GlobalKey<MarkdownReaderViewState>();
   double _basePdfZoom = 1.0;
   PdfActiveSelectionState? _pdfActiveSelection;
+  bool _isPinMode = false;
+  ArbitraryPointMenuState? _arbitraryMenuState;
+  Timer? _touchLongPressTimer;
+  Offset _pointerDownGlobalPosition = Offset.zero;
+  Offset _pointerDownLocalPosition = Offset.zero;
 
   // Outline (TOC) & Search state
   List<OutlineItem> _outlineItems = [];
@@ -82,6 +103,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   @override
   void initState() {
     super.initState();
+    if (kIsWeb) {
+      BrowserContextMenu.disableContextMenu();
+    }
     _pdfController = PdfViewerController();
     _pdfController.addListener(_onPdfControllerUpdate);
     _doc = widget.document;
@@ -108,6 +132,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   @override
   void dispose() {
+    if (kIsWeb) {
+      BrowserContextMenu.enableContextMenu();
+    }
+    _touchLongPressTimer?.cancel();
     _pdfController.removeListener(_onPdfControllerUpdate);
     _ocrPollTimer?.cancel();
     super.dispose();
@@ -225,6 +253,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     setState(() {
       _viewMode = mode;
       _pdfActiveSelection = null;
+      _arbitraryMenuState = null;
+      _isPinMode = false;
       if (mode == ReaderViewMode.markdown) {
         _hasActivatedMarkdown = true;
       }
@@ -465,6 +495,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       onResetZoom: _handleResetZoom,
       onFitWidth: _handleFitWidth,
       onDeleteAnnotation: _handleDeleteAnnotation,
+      onAddNewNote: (page) => _openNewNoteDialogForPage(page),
     );
   }
 
@@ -852,6 +883,282 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     );
   }
 
+  Widget _buildPositionedArbitraryMenu({
+    required BuildContext context,
+    required ArbitraryPointMenuState menuState,
+    required Size containerSize,
+    required bool isMobile,
+    required ReadingMode readingMode,
+  }) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final isSepia = readingMode == ReadingMode.sepia;
+
+    final Color bgColor = isSepia
+        ? const Color(0xFFFBF0D9)
+        : (isDark ? const Color(0xFF1E293B) : Colors.white);
+    final Color textColor = isSepia
+        ? const Color(0xFF433422)
+        : (isDark ? const Color(0xFFF1F5F9) : const Color(0xFF0F172A));
+    final Color borderColor = isSepia
+        ? const Color(0xFFDCC8A4)
+        : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0));
+
+    final double menuWidth = isMobile ? 260.0 : 200.0;
+    final double menuHeight = isMobile ? 48.0 : 138.0;
+
+    double left = menuState.position.dx - (isMobile ? menuWidth / 2 : 16);
+    if (left < 16) left = 16;
+    if (left + menuWidth > containerSize.width - 16) {
+      left = containerSize.width - menuWidth - 16;
+    }
+    if (left < 0) left = 0;
+
+    double top = menuState.position.dy - (isMobile ? menuHeight + 16 : 10);
+    if (top < 10) {
+      top = menuState.position.dy + 20;
+    }
+    if (top + menuHeight > containerSize.height - 10) {
+      top = containerSize.height - menuHeight - 10;
+    }
+    if (top < 0) top = 0;
+
+    return Positioned(
+      left: left,
+      top: top,
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0.0, end: 1.0),
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutBack,
+        builder: (context, val, animChild) {
+          return Transform.scale(
+            scale: val,
+            alignment: Alignment.center,
+            child: animChild,
+          );
+        },
+        child: Material(
+          type: MaterialType.transparency,
+          child: Container(
+            width: menuWidth,
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.circular(isMobile ? 24 : 12),
+              border: Border.all(color: borderColor, width: 1),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.45 : 0.12),
+                  blurRadius: 16,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: isMobile
+                ? _buildMobileArbitraryMenuContent(menuState, textColor, theme)
+                : _buildDesktopArbitraryMenuContent(menuState, textColor, theme),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDesktopArbitraryMenuContent(
+    ArbitraryPointMenuState menuState,
+    Color textColor,
+    ThemeData theme,
+  ) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkWell(
+          onTap: () {
+            setState(() => _arbitraryMenuState = null);
+            _openNewNoteDialogForPage(
+              menuState.pageNumber,
+              normalizedRect: menuState.normalizedRect,
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(
+              children: [
+                const Icon(Icons.push_pin_rounded, size: 16, color: Color(0xFF6366F1)),
+                const SizedBox(width: 10),
+                Text(
+                  '在此处添加批注',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textColor),
+                ),
+              ],
+            ),
+          ),
+        ),
+        Divider(height: 1, thickness: 0.8, color: theme.dividerColor.withValues(alpha: 0.1)),
+        InkWell(
+          onTap: () {
+            setState(() => _arbitraryMenuState = null);
+            _openNewCardDialogForPage(
+              menuState.pageNumber,
+              normalizedRect: menuState.normalizedRect,
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(
+              children: [
+                const Icon(Icons.style_rounded, size: 16, color: Color(0xFF8B5CF6)),
+                const SizedBox(width: 10),
+                Text(
+                  '在此处添加知识卡片',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textColor),
+                ),
+              ],
+            ),
+          ),
+        ),
+        Divider(height: 1, thickness: 0.8, color: theme.dividerColor.withValues(alpha: 0.1)),
+        InkWell(
+          onTap: () {
+            setState(() => _arbitraryMenuState = null);
+            _handleAskAi("提问关于第 ${menuState.pageNumber} 页的内容", menuState.pageNumber);
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(
+              children: [
+                const Icon(Icons.auto_awesome_rounded, size: 16, color: Color(0xFF0EA5E9)),
+                const SizedBox(width: 10),
+                Text(
+                  '提问 AI (第 ${menuState.pageNumber} 页)',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textColor),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMobileArbitraryMenuContent(
+    ArbitraryPointMenuState menuState,
+    Color textColor,
+    ThemeData theme,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          TextButton.icon(
+            onPressed: () {
+              setState(() => _arbitraryMenuState = null);
+              _openNewNoteDialogForPage(
+                menuState.pageNumber,
+                normalizedRect: menuState.normalizedRect,
+              );
+            },
+            icon: const Icon(Icons.push_pin_rounded, size: 16, color: Color(0xFF6366F1)),
+            label: Text('批注', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: textColor)),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+          Container(height: 16, width: 1, color: theme.dividerColor.withValues(alpha: 0.2)),
+          TextButton.icon(
+            onPressed: () {
+              setState(() => _arbitraryMenuState = null);
+              _openNewCardDialogForPage(
+                menuState.pageNumber,
+                normalizedRect: menuState.normalizedRect,
+              );
+            },
+            icon: const Icon(Icons.style_rounded, size: 16, color: Color(0xFF8B5CF6)),
+            label: Text('卡片', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: textColor)),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+          Container(height: 16, width: 1, color: theme.dividerColor.withValues(alpha: 0.2)),
+          TextButton.icon(
+            onPressed: () {
+              setState(() => _arbitraryMenuState = null);
+              _handleAskAi("提问关于第 ${menuState.pageNumber} 页的内容", menuState.pageNumber);
+            },
+            icon: const Icon(Icons.auto_awesome_rounded, size: 16, color: Color(0xFF0EA5E9)),
+            label: Text('问AI', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: textColor)),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPinModeBanner(ThemeData theme, bool isDark) {
+    return Positioned(
+      top: 16,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF1E293B) : Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.6), width: 1.2),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.25),
+                blurRadius: 16,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.push_pin_rounded, color: Color(0xFF6366F1), size: 16),
+              const SizedBox(width: 8),
+              Text(
+                '图钉模式已开启：点击页面任意位置放置批注',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: isDark ? Colors.white : const Color(0xFF1E293B),
+                ),
+              ),
+              const SizedBox(width: 10),
+              InkWell(
+                onTap: () => setState(() => _isPinMode = false),
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.close_rounded, size: 14, color: Colors.grey.shade500),
+                      const SizedBox(width: 2),
+                      Text('退出', style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _createHighlightFromSelection({
     required String colorHex,
     required String selectedText,
@@ -981,6 +1288,174 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         duration: const Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+  }
+
+  ({int pageNumber, NormalizedRect normalizedRect})? _resolvePdfPageCoordinates(Offset viewerLocalPos) {
+    if (!_pdfController.isReady) return null;
+    final invMatrix = Matrix4.inverted(_pdfController.value);
+    final docPos = MatrixUtils.transformPoint(invMatrix, viewerLocalPos);
+
+    final pageLayouts = _pdfController.layout.pageLayouts;
+    if (pageLayouts.isEmpty) return null;
+
+    int? hitIndex;
+    Rect? hitPageRect;
+    for (int i = 0; i < pageLayouts.length; i++) {
+      if (pageLayouts[i].contains(docPos)) {
+        hitIndex = i;
+        hitPageRect = pageLayouts[i];
+        break;
+      }
+    }
+
+    if (hitIndex == null || hitPageRect == null) {
+      double minDistance = double.infinity;
+      for (int i = 0; i < pageLayouts.length; i++) {
+        final rect = pageLayouts[i];
+        final dist = (rect.center - docPos).distanceSquared;
+        if (dist < minDistance) {
+          minDistance = dist;
+          hitIndex = i;
+          hitPageRect = rect;
+        }
+      }
+    }
+
+    if (hitIndex == null || hitPageRect == null) return null;
+
+    final normX = ((docPos.dx - hitPageRect.left) / hitPageRect.width).clamp(0.01, 0.99);
+    final normY = ((docPos.dy - hitPageRect.top) / hitPageRect.height).clamp(0.01, 0.99);
+
+    return (
+      pageNumber: hitIndex + 1,
+      normalizedRect: NormalizedRect(
+        x: normX,
+        y: normY,
+        width: 0.02,
+        height: 0.02,
+      ),
+    );
+  }
+
+  void _handleSecondaryClick(Offset localPos, {bool isTouch = false}) {
+    final resolved = _resolvePdfPageCoordinates(localPos);
+    if (resolved == null) return;
+
+    if (mounted) {
+      setState(() {
+        _pdfActiveSelection = null;
+        _arbitraryMenuState = ArbitraryPointMenuState(
+          pageNumber: resolved.pageNumber,
+          normalizedRect: resolved.normalizedRect,
+          position: localPos,
+          isTouch: isTouch,
+        );
+      });
+    }
+  }
+
+  void _handlePinDrop(Offset localPos) {
+    final resolved = _resolvePdfPageCoordinates(localPos);
+    if (resolved == null) return;
+
+    _openNewNoteDialogForPage(
+      resolved.pageNumber,
+      normalizedRect: resolved.normalizedRect,
+    );
+  }
+
+  void _openNewNoteDialogForPage(int pageNumber, {NormalizedRect? normalizedRect}) {
+    final rects = normalizedRect != null
+        ? [normalizedRect]
+        : <NormalizedRect>[];
+
+    final tempAnno = PdfAnnotation(
+      id: _uuid.v4(),
+      docId: widget.document.id,
+      type: "note",
+      pageNumber: pageNumber,
+      colorHex: "#6366F1",
+      rects: rects,
+      selectedText: "",
+      noteContent: "",
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    showDialog(
+      context: context,
+      builder: (ctx) => NoteEditorDialog(
+        annotation: tempAnno,
+        onSave: (saved) {
+          final newAnno = saved.copyWith(
+            rects: rects,
+            type: "note",
+          );
+          context.read<AnnotationProvider>().addAnnotation(newAnno);
+          context.read<DocumentProvider>().updateAnnotationCount(widget.document.id, 1);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.push_pin_rounded, color: Color(0xFF818CF8), size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '已在第 $pageNumber 页添加批注笔记',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              duration: const Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          );
+        },
+        onDelete: () {},
+      ),
+    );
+  }
+
+  void _openNewCardDialogForPage(int pageNumber, {NormalizedRect? normalizedRect}) {
+    final rects = normalizedRect != null
+        ? [normalizedRect]
+        : <NormalizedRect>[];
+
+    final tempAnno = PdfAnnotation(
+      id: _uuid.v4(),
+      docId: widget.document.id,
+      type: "card",
+      pageNumber: pageNumber,
+      colorHex: "#8B5CF6",
+      rects: rects,
+      selectedText: "",
+      noteContent: "",
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    showDialog(
+      context: context,
+      builder: (ctx) => KnowledgeCardDialog(
+        annotation: tempAnno,
+        pageNumber: pageNumber,
+        docId: widget.document.id,
+        startInEditMode: true,
+        onSave: (saved) {
+          final cardAnno = saved.copyWith(
+            rects: rects,
+            type: "card",
+          );
+          context.read<AnnotationProvider>().addAnnotation(cardAnno);
+          context.read<DocumentProvider>().updateAnnotationCount(widget.document.id, 1);
+        },
+        onDelete: () {},
+        onJumpToPage: _onJumpToPage,
       ),
     );
   }
@@ -1130,22 +1605,24 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
       if (anno.rects.isNotEmpty) {
         final firstNorm = anno.rects.first;
-        final pdfRect = PdfRect(
-          firstNorm.x * page.width,
-          (firstNorm.y + firstNorm.height) * page.height,
-          (firstNorm.x + firstNorm.width) * page.width,
-          firstNorm.y * page.height,
-        );
-        final screenRect = pdfRect.toRectInDocument(page: page, pageRect: pageRect);
+        if (anno.isPointAnnotation || anno.selectedText.trim().isEmpty) {
+          badgeLeft = (firstNorm.x * pageRect.width - 13.0).clamp(4.0, max(4.0, pageRect.width - 30.0));
+          badgeTop = (firstNorm.y * pageRect.height - 13.0).clamp(2.0, max(2.0, pageRect.height - 30.0));
+        } else {
+          final pdfRect = PdfRect(
+            firstNorm.x * page.width,
+            (firstNorm.y + firstNorm.height) * page.height,
+            (firstNorm.x + firstNorm.width) * page.width,
+            firstNorm.y * page.height,
+          );
+          final screenRect = pdfRect.toRectInDocument(page: page, pageRect: pageRect);
 
-        // screenRect is in document coordinates; pageRect is this page's rect in document coordinates.
-        // Inside pageOverlaysBuilder, pdfrx places the overlay in a Positioned at pageRect's position.
-        // Therefore, relative coordinates on this page are:
-        badgeLeft = screenRect.left - pageRect.left - 24.0;
-        if (badgeLeft < 4.0) {
-          badgeLeft = (screenRect.left - pageRect.left).clamp(4.0, max(4.0, pageRect.width - 24.0));
+          badgeLeft = screenRect.left - pageRect.left - 24.0;
+          if (badgeLeft < 4.0) {
+            badgeLeft = (screenRect.left - pageRect.left).clamp(4.0, max(4.0, pageRect.width - 24.0));
+          }
+          badgeTop = (screenRect.top - pageRect.top - 2.0).clamp(2.0, max(2.0, pageRect.height - 24.0));
         }
-        badgeTop = (screenRect.top - pageRect.top - 2.0).clamp(2.0, max(2.0, pageRect.height - 24.0));
       }
 
       badges.add(
@@ -1167,7 +1644,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     return Tooltip(
       message: isCard
           ? '知识卡片: ${anno.displayTitle} (点击查看/编辑)'
-          : '批注笔记: ${anno.displayTitle} (点击查看/编辑)',
+          : (anno.isPointAnnotation ? '图钉批注: ${anno.displayTitle} (点击查看/编辑)' : '批注笔记: ${anno.displayTitle} (点击查看/编辑)'),
       child: Material(
         type: MaterialType.transparency,
         child: InkWell(
@@ -1178,27 +1655,30 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               _openPdfNoteDialog(anno);
             }
           },
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(7),
           child: Container(
-            padding: const EdgeInsets.all(3.5),
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            padding: const EdgeInsets.all(4.0),
             decoration: BoxDecoration(
               color: isDark ? const Color(0xFF1E293B) : Colors.white,
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(7),
               border: Border.all(
                 color: color,
-                width: 1.2,
+                width: 1.3,
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.14),
-                  blurRadius: 4,
+                  color: Colors.black.withValues(alpha: isDark ? 0.4 : 0.16),
+                  blurRadius: 5,
                   offset: const Offset(0, 1),
                 ),
               ],
             ),
             child: Icon(
-              isCard ? Icons.style_rounded : Icons.edit_note_rounded,
-              size: 14,
+              isCard
+                  ? Icons.style_rounded
+                  : (anno.isPointAnnotation ? Icons.push_pin_rounded : Icons.edit_note_rounded),
+              size: 14.5,
               color: color,
             ),
           ),
@@ -1310,6 +1790,38 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               ),
             );
           }),
+          Tooltip(
+            message: '在当前第 $_currentPage 页添加批注笔记',
+            child: InkWell(
+              onTap: () => _openNewNoteDialogForPage(_currentPage),
+              borderRadius: BorderRadius.circular(6),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primary.withValues(alpha: isDark ? 0.2 : 0.08),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.35),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.add_rounded, size: 12, color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: 3),
+                    Text(
+                      '记批注',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1517,9 +2029,24 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
         return Theme(
           data: activeTheme,
-          child: Scaffold(
-            backgroundColor: canvasBg,
-            bottomNavigationBar: isMobile && !_isImmersiveMode
+          child: Focus(
+            autofocus: true,
+            onKeyEvent: (node, event) {
+              if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
+                if (_isPinMode) {
+                  setState(() => _isPinMode = false);
+                  return KeyEventResult.handled;
+                }
+                if (_arbitraryMenuState != null) {
+                  setState(() => _arbitraryMenuState = null);
+                  return KeyEventResult.handled;
+                }
+              }
+              return KeyEventResult.ignored;
+            },
+            child: Scaffold(
+              backgroundColor: canvasBg,
+              bottomNavigationBar: isMobile && !_isImmersiveMode
                 ? ReaderBottomBar(
                     currentPage: _currentPage,
                     totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
@@ -1561,6 +2088,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                               _onJumpToPage(_currentPage + 1);
                             }
                           },
+                          isPinMode: _isPinMode,
+                          onTogglePinMode: () => setState(() => _isPinMode = !_isPinMode),
                         ),
 
                       // Scanned / Image PDF OCR Banner
@@ -1637,6 +2166,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                                   onResetZoom: _handleResetZoom,
                                   onFitWidth: _handleFitWidth,
                                   onDeleteAnnotation: _handleDeleteAnnotation,
+                                  onAddNewNote: (page) => _openNewNoteDialogForPage(page),
                                 )
                               else
                                 _buildCollapsedRail(SidebarDockPosition.left, settings, isDark, activeTheme),
@@ -1702,6 +2232,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                                   onResetZoom: _handleResetZoom,
                                   onFitWidth: _handleFitWidth,
                                   onDeleteAnnotation: _handleDeleteAnnotation,
+                                  onAddNewNote: (page) => _openNewNoteDialogForPage(page),
                                 )
                               else if (!settings.isRightSidebarOpen && settings.rightDockedTabs.isNotEmpty)
                                 _buildCollapsedRail(SidebarDockPosition.right, settings, isDark, activeTheme),
@@ -1749,6 +2280,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                 ],
               ),
             ),
+          ),
           ),
         );
       },
@@ -1995,35 +2527,82 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         final isMobile = constraints.maxWidth < 700;
         return Stack(
           children: [
-            Listener(
-              behavior: HitTestBehavior.translucent,
-              onPointerDown: (event) {
-                if (_pdfActiveSelection != null) {
-                  setState(() => _pdfActiveSelection = null);
-                }
-              },
-              onPointerUp: (event) async {
-                final renderBox = viewerContext.findRenderObject() as RenderBox?;
-                final stackPos = renderBox != null
-                    ? renderBox.globalToLocal(event.position)
-                    : event.localPosition;
-                await Future.delayed(const Duration(milliseconds: 50));
-                if (!mounted) return;
-                if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
-                  final text = await _pdfController.textSelectionDelegate.getSelectedText();
-                  final ranges = await _pdfController.textSelectionDelegate.getSelectedTextRanges();
-                  if (text.trim().isNotEmpty && ranges.isNotEmpty && mounted) {
-                    setState(() {
-                      _pdfActiveSelection = PdfActiveSelectionState(
-                        text: text,
-                        ranges: ranges,
-                        position: stackPos,
-                      );
+            MouseRegion(
+              cursor: _isPinMode ? SystemMouseCursors.precise : MouseCursor.defer,
+              child: Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: (event) {
+                  if (_arbitraryMenuState != null) {
+                    setState(() => _arbitraryMenuState = null);
+                  }
+                  if (_pdfActiveSelection != null) {
+                    setState(() => _pdfActiveSelection = null);
+                  }
+
+                  final renderBox = viewerContext.findRenderObject() as RenderBox?;
+                  final stackPos = renderBox != null
+                      ? renderBox.globalToLocal(event.position)
+                      : event.localPosition;
+
+                  _pointerDownGlobalPosition = event.position;
+                  _pointerDownLocalPosition = stackPos;
+
+                  if (event.buttons == kSecondaryMouseButton) {
+                    _touchLongPressTimer?.cancel();
+                    _handleSecondaryClick(stackPos, isTouch: false);
+                    return;
+                  }
+
+                  if (event.kind == PointerDeviceKind.touch) {
+                    _touchLongPressTimer?.cancel();
+                    _touchLongPressTimer = Timer(const Duration(milliseconds: 400), () {
+                      if (!mounted) return;
+                      if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) return;
+                      HapticFeedback.lightImpact();
+                      _handleSecondaryClick(_pointerDownLocalPosition, isTouch: true);
                     });
                   }
-                }
-              },
-              child: pdfViewerWidget,
+                },
+                onPointerMove: (event) {
+                  if ((event.position - _pointerDownGlobalPosition).distance > 10) {
+                    _touchLongPressTimer?.cancel();
+                  }
+                },
+                onPointerCancel: (event) {
+                  _touchLongPressTimer?.cancel();
+                },
+                onPointerUp: (event) async {
+                  _touchLongPressTimer?.cancel();
+                  final renderBox = viewerContext.findRenderObject() as RenderBox?;
+                  final stackPos = renderBox != null
+                      ? renderBox.globalToLocal(event.position)
+                      : event.localPosition;
+
+                  // Pin mode drop
+                  if (_isPinMode && (event.position - _pointerDownGlobalPosition).distance < 6) {
+                    setState(() => _isPinMode = false);
+                    _handlePinDrop(stackPos);
+                    return;
+                  }
+
+                  await Future.delayed(const Duration(milliseconds: 50));
+                  if (!mounted) return;
+                  if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
+                    final text = await _pdfController.textSelectionDelegate.getSelectedText();
+                    final ranges = await _pdfController.textSelectionDelegate.getSelectedTextRanges();
+                    if (text.trim().isNotEmpty && ranges.isNotEmpty && mounted) {
+                      setState(() {
+                        _pdfActiveSelection = PdfActiveSelectionState(
+                          text: text,
+                          ranges: ranges,
+                          position: stackPos,
+                        );
+                      });
+                    }
+                  }
+                },
+                child: pdfViewerWidget,
+              ),
             ),
             if (_pdfActiveSelection != null)
               _buildPositionedFloatingBar(
@@ -2101,6 +2680,16 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   ),
                 ),
               ),
+            if (_arbitraryMenuState != null)
+              _buildPositionedArbitraryMenu(
+                context: context,
+                menuState: _arbitraryMenuState!,
+                containerSize: Size(constraints.maxWidth, constraints.maxHeight),
+                isMobile: isMobile,
+                readingMode: settings.readingMode,
+              ),
+            if (_isPinMode)
+              _buildPinModeBanner(activeTheme, isDark),
           ],
         );
       },

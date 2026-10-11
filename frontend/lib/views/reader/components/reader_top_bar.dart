@@ -25,6 +25,8 @@ class ReaderTopBar extends StatelessWidget {
   final ValueChanged<ReaderViewMode>? onViewModeChanged;
   final bool hasMarkdown;
   final bool isMobile;
+  final bool isPinMode;
+  final VoidCallback? onTogglePinMode;
 
   const ReaderTopBar({
     super.key,
@@ -43,6 +45,8 @@ class ReaderTopBar extends StatelessWidget {
     this.onViewModeChanged,
     this.hasMarkdown = false,
     this.isMobile = false,
+    this.isPinMode = false,
+    this.onTogglePinMode,
   });
 
   @override
@@ -147,7 +151,13 @@ class ReaderTopBar extends StatelessWidget {
           _buildOcrButton(context, theme, isDark),
           SizedBox(width: isMobile ? 6 : 10),
 
-          // 5. Theme Switcher Menu
+          // 5. Pin Dropping Mode Button (Desktop)
+          if (!isMobile && onTogglePinMode != null) ...[
+            _buildPinModeButton(context, theme, isDark),
+            const SizedBox(width: 10),
+          ],
+
+          // 6. Theme Switcher Menu
           PopupMenuButton<ReadingMode>(
             tooltip: '切换阅读主题',
             offset: const Offset(0, 44),
@@ -483,6 +493,66 @@ class ReaderTopBar extends StatelessWidget {
               ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPinModeButton(BuildContext context, ThemeData theme, bool isDark) {
+    return Tooltip(
+      message: isPinMode
+          ? '图钉模式已激活：点击文档任意处放置批注 (点击退出)'
+          : '图钉批注：激活后点击文档任意位置直接放置批注笔记',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTogglePinMode,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+          decoration: BoxDecoration(
+            color: isPinMode
+                ? theme.colorScheme.primary
+                : (isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.04)),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isPinMode
+                  ? theme.colorScheme.primary
+                  : (isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1)),
+              width: 1,
+            ),
+            boxShadow: isPinMode
+                ? [
+                    BoxShadow(
+                      color: theme.colorScheme.primary.withValues(alpha: 0.35),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isPinMode ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                size: 14,
+                color: isPinMode
+                    ? Colors.white
+                    : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                '图钉批注',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: isPinMode ? FontWeight.bold : FontWeight.w600,
+                  color: isPinMode
+                      ? Colors.white
+                      : (isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569)),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

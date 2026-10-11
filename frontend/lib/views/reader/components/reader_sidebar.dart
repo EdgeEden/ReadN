@@ -59,6 +59,7 @@ class ReaderSidebar extends StatefulWidget {
   final String documentTitle;
   final String docId;
   final Future<String?> Function(int pageNumber)? onGetPageContext;
+  final void Function(int pageNumber)? onAddNewNote;
 
   const ReaderSidebar({
     super.key,
@@ -84,6 +85,7 @@ class ReaderSidebar extends StatefulWidget {
     this.documentTitle = '',
     this.docId = '',
     this.onGetPageContext,
+    this.onAddNewNote,
   });
 
   @override
@@ -987,6 +989,28 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
 
     return Column(
       children: [
+        if (widget.onAddNewNote != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+            child: SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: theme.colorScheme.primary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  elevation: 0,
+                ),
+                icon: const Icon(Icons.add_rounded, size: 16),
+                label: Text(
+                  '在第 ${widget.currentPage} 页添加批注',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+                onPressed: () => widget.onAddNewNote?.call(widget.currentPage),
+              ),
+            ),
+          ),
         _buildAnnotationSearchAndFilter(context, theme, isDark, annoProvider, isNotesOnly: true),
         const Divider(height: 1),
         Expanded(
@@ -1000,10 +1024,18 @@ class _ReaderSidebarState extends State<ReaderSidebar> {
                         Icon(Icons.edit_note_rounded, size: 40, color: Colors.grey.withValues(alpha: 0.4)),
                         const SizedBox(height: 10),
                         const Text(
-                          '暂无批注笔记\n划选文字点击“批注”即可添加个人笔记',
+                          '暂无批注笔记\n可在任意位置右键/长按或点击上方按钮添加',
                           textAlign: TextAlign.center,
                           style: TextStyle(fontSize: 13, color: Colors.grey),
                         ),
+                        if (widget.onAddNewNote != null) ...[
+                          const SizedBox(height: 14),
+                          OutlinedButton.icon(
+                            icon: const Icon(Icons.add_rounded, size: 15),
+                            label: Text('在第 ${widget.currentPage} 页写批注'),
+                            onPressed: () => widget.onAddNewNote?.call(widget.currentPage),
+                          ),
+                        ],
                       ],
                     ),
                   ),

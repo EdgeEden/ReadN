@@ -31,6 +31,7 @@ class ReaderMobileBottomSheet {
     String documentTitle = '',
     String docId = '',
     Future<String?> Function(int pageNumber)? onGetPageContext,
+    void Function(int pageNumber)? onAddNewNote,
   }) {
     return showModalBottomSheet(
       context: context,
@@ -73,6 +74,12 @@ class ReaderMobileBottomSheet {
                 documentTitle: documentTitle,
                 docId: docId,
                 onGetPageContext: onGetPageContext,
+                onAddNewNote: onAddNewNote != null
+                    ? (page) {
+                        Navigator.of(sheetContext).pop();
+                        onAddNewNote(page);
+                      }
+                    : null,
                 onClose: () => Navigator.of(sheetContext).pop(),
               ),
             ),
