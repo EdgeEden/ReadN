@@ -64,13 +64,14 @@ class _NoteEditorDialogState extends State<NoteEditorDialog> {
       backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
       surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Container(
-        width: 460,
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
             // 1. Header
             Row(
               children: [
@@ -225,6 +226,7 @@ class _NoteEditorDialogState extends State<NoteEditorDialog> {
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }
