@@ -94,6 +94,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   Timer? _stylusLongPressTimer;
   Offset _pointerDownGlobalPosition = Offset.zero;
   Offset _pointerDownLocalPosition = Offset.zero;
+  bool _wasSelectionActiveOnPointerDown = false;
 
   // Stylus & Palm Rejection state
   bool _isStylusContacting = false;
@@ -284,6 +285,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       _viewMode = mode;
       _pdfActiveSelection = null;
       _arbitraryMenuState = null;
+      _wasSelectionActiveOnPointerDown = false;
       if (mode == ReaderViewMode.markdown) {
         _hasActivatedMarkdown = true;
       }
@@ -2438,8 +2440,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         enabled: true,
         showContextMenuAutomatically: false,
         onTextSelectionChange: (textSelection) {
-          if (settings.isStylusMode &&
-              (_lastPointerDeviceKind == PointerDeviceKind.touch || _isPalmRejectionActive(true))) {
+          if (settings.isStylusMode && _lastPointerDeviceKind == PointerDeviceKind.touch) {
             if (textSelection.hasSelectedText) {
               _pdfController.textSelectionDelegate.clearTextSelection();
             }
@@ -2511,16 +2512,16 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               return true;
             }
           }
+        } else {
+          if (details.type == PdfViewerGeneralTapType.secondaryTap) {
+            _handleSecondaryClick(details.localPosition, isTouch: false);
+            return true;
+          }
         }
         return false;
       },
       buildContextMenu: (viewerContext, params) {
-        if (params.contextMenuFor != PdfViewerPart.selectedText) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            params.dismissContextMenu();
-            _handleSecondaryClick(params.anchorA, isTouch: false);
-          });
-        }
+        params.dismissContextMenu();
         return null;
       },
       onPageChanged: (pageNumber) {
@@ -2595,10 +2596,23 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               child: Listener(
                 behavior: HitTestBehavior.translucent,
                 onPointerDown: (event) {
-                  _lastPointerDeviceKind = event.kind;
                   final isStylus = event.kind == PointerDeviceKind.stylus ||
                       event.kind == PointerDeviceKind.invertedStylus;
                   final isTouch = event.kind == PointerDeviceKind.touch;
+
+                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                    return; // Ignore palm touch completely
+                  }
+
+                  _lastPointerDeviceKind = event.kind;
+
+                  final renderBox = viewerContext.findRenderObject() as RenderBox?;
+                  final stackPos = renderBox != null
+                      ? renderBox.globalToLocal(event.position)
+                      : event.localPosition;
+
+                  _pointerDownGlobalPosition = event.position;
+                  _pointerDownLocalPosition = stackPos;
 
                   if (isStylus) {
                     _currentInteractionDeviceKind = PointerDeviceKind.stylus;
@@ -2611,15 +2625,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   } else if (isTouch) {
                     _currentInteractionDeviceKind = PointerDeviceKind.touch;
                     _stylusInteractionStartMatrix = null;
-                    if (_isPalmRejectionActive(settings.isStylusMode)) {
-                      return; // Ignore palm touch
-                    }
-                    if (settings.isStylusMode) {
-                      // In stylus mode, touch should clear any pending selection immediately
-                      if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
-                        _pdfController.textSelectionDelegate.clearTextSelection();
-                      }
-                    }
                   } else {
                     _currentInteractionDeviceKind = event.kind;
                     _stylusInteractionStartMatrix = null;
@@ -2628,24 +2633,37 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   if (_arbitraryMenuState != null) {
                     setState(() => _arbitraryMenuState = null);
                   }
-                  if (_pdfActiveSelection != null) {
-                    setState(() => _pdfActiveSelection = null);
-                  }
-
-                  final renderBox = viewerContext.findRenderObject() as RenderBox?;
-                  final stackPos = renderBox != null
-                      ? renderBox.globalToLocal(event.position)
-                      : event.localPosition;
-
-                  _pointerDownGlobalPosition = event.position;
-                  _pointerDownLocalPosition = stackPos;
 
                   // Secondary click (mouse right-click or stylus side-button)
                   final isSecondary = event.buttons == kSecondaryMouseButton || (event.buttons & 32 != 0);
                   if (isSecondary) {
                     _touchLongPressTimer?.cancel();
                     _stylusLongPressTimer?.cancel();
+                    if (_pdfActiveSelection != null) {
+                      setState(() => _pdfActiveSelection = null);
+                    }
+                    if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
+                      _pdfController.textSelectionDelegate.clearTextSelection();
+                    }
+                    _wasSelectionActiveOnPointerDown = false;
                     _handleSecondaryClick(stackPos, isTouch: false);
+                    return;
+                  }
+
+                  // Check if there was an active selection before this pointer down
+                  final hadActiveSelection = _pdfActiveSelection != null ||
+                      (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText);
+                  _wasSelectionActiveOnPointerDown = hadActiveSelection;
+
+                  if (hadActiveSelection) {
+                    if (_pdfActiveSelection != null) {
+                      setState(() => _pdfActiveSelection = null);
+                    }
+                    if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
+                      _pdfController.textSelectionDelegate.clearTextSelection();
+                    }
+                    _touchLongPressTimer?.cancel();
+                    _stylusLongPressTimer?.cancel();
                     return;
                   }
 
@@ -2678,6 +2696,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   final isStylus = event.kind == PointerDeviceKind.stylus ||
                       event.kind == PointerDeviceKind.invertedStylus;
                   final isTouch = event.kind == PointerDeviceKind.touch;
+
+                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                    return;
+                  }
+
                   if (isStylus) {
                     _lastStylusContactTime = DateTime.now();
                     if (_pdfController.isReady && _stylusInteractionStartMatrix != null) {
@@ -2697,6 +2720,12 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                 onPointerCancel: (event) {
                   final isStylus = event.kind == PointerDeviceKind.stylus ||
                       event.kind == PointerDeviceKind.invertedStylus;
+                  final isTouch = event.kind == PointerDeviceKind.touch;
+
+                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                    return;
+                  }
+
                   if (isStylus) {
                     _isStylusContacting = false;
                     _lastStylusContactTime = DateTime.now();
@@ -2707,11 +2736,16 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   }
                   _touchLongPressTimer?.cancel();
                   _stylusLongPressTimer?.cancel();
+                  _wasSelectionActiveOnPointerDown = false;
                 },
                 onPointerUp: (event) async {
                   final isStylus = event.kind == PointerDeviceKind.stylus ||
                       event.kind == PointerDeviceKind.invertedStylus;
                   final isTouch = event.kind == PointerDeviceKind.touch;
+
+                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                    return;
+                  }
 
                   if (isStylus) {
                     _isStylusContacting = false;
@@ -2731,17 +2765,21 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   }
                   _touchLongPressTimer?.cancel();
 
-                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
-                    return;
-                  }
-
                   // In stylus mode, finger touch should never trigger text selection floating bar
                   if (settings.isStylusMode && isTouch) {
                     if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
                       _pdfController.textSelectionDelegate.clearTextSelection();
                     }
+                    _wasSelectionActiveOnPointerDown = false;
                     return;
                   }
+
+                  final isTap = (event.position - _pointerDownGlobalPosition).distance < 10;
+                  if (_wasSelectionActiveOnPointerDown && isTap) {
+                    _wasSelectionActiveOnPointerDown = false;
+                    return;
+                  }
+                  _wasSelectionActiveOnPointerDown = false;
 
                   final renderBox = viewerContext.findRenderObject() as RenderBox?;
                   final stackPos = renderBox != null

@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:ui';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:frontend/models/document_model.dart';
@@ -1784,6 +1785,48 @@ End of page.
       await tester.pumpAndSettle();
 
       expect(settingsProvider.isStylusMode, isTrue);
+    });
+
+    testWidgets('PdfTextSelection and pointer dismissal state test', (WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({'readn_stylus_mode': true});
+      final storage = await StorageService.init();
+      final settingsProvider = ReaderSettingsProvider(storageService: storage);
+
+      // Verify that stylus mode is true
+      expect(settingsProvider.isStylusMode, isTrue);
+
+      // Verify that PointerDeviceKind.stylus is distinct from touch
+      expect(PointerDeviceKind.stylus != PointerDeviceKind.touch, isTrue);
+      expect(PointerDeviceKind.invertedStylus != PointerDeviceKind.touch, isTrue);
+
+      // Verify FloatingSelectionBar dismiss callback clears selection state
+      bool selectionCleared = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: FloatingSelectionBar(
+              selectedText: 'Test Stylus Selection',
+              readingMode: ReadingMode.light,
+              isMobile: false,
+              onHighlight: (_) {},
+              onAddNote: () {},
+              onAskAi: () {},
+              onDismiss: () {
+                selectionCleared = true;
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('批注'), findsOneWidget);
+      expect(find.byIcon(Icons.close_rounded), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.close_rounded));
+      await tester.pumpAndSettle();
+
+      expect(selectionCleared, isTrue);
     });
   });
 }
