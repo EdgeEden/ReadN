@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.1.27-blue.svg?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.1.28-blue.svg?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/Flutter-3.47+-02569B?style=flat-square&logo=flutter&logoColor=white" alt="Flutter">
   <img src="https://img.shields.io/badge/FastAPI-0.110+-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Platform-Web%20%7C%20Windows%20%7C%20Android-green?style=flat-square" alt="Platforms">
@@ -154,6 +154,8 @@ flutter build web --release      # Web 发布包
 flutter build windows --release  # Windows 安装包
 flutter build apk --release      # Android APK
 ```
+
+---
 
 ## 📝 开源协议 (License)
 
