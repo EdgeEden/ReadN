@@ -7,6 +7,7 @@ class StorageService {
   static const String _keyLastDocId = 'readn_last_doc_id';
   static const String _keyLastPagePrefix = 'readn_last_page_';
   static const String _keyDefaultHighlightColor = 'readn_default_highlight_color';
+  static const String _keyStylusMode = 'readn_stylus_mode';
   static const String _keyAiBaseUrl = 'readn_ai_base_url';
   static const String _keyAiApiKey = 'readn_ai_api_key';
   static const String _keyAiModel = 'readn_ai_model';
@@ -136,6 +137,14 @@ class StorageService {
 
   Future<bool> setAiIncludeContext(bool includeContext) {
     return _prefs.setBool(_keyAiIncludeContext, includeContext);
+  }
+
+  bool getStylusMode() {
+    return _prefs.getBool(_keyStylusMode) ?? false;
+  }
+
+  Future<bool> setStylusMode(bool enabled) {
+    return _prefs.setBool(_keyStylusMode, enabled);
   }
 }
 

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -111,6 +112,19 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
   bool _isProgrammaticScrolling = false;
   int? _lastReportedPage;
   bool _hasExplicitPageMarkers = false;
+
+  // Stylus & Palm Rejection state
+  bool _isStylusContacting = false;
+  DateTime? _lastStylusContactTime;
+
+  bool _isPalmRejectionActive(bool isStylusMode) {
+    if (!isStylusMode) return false;
+    if (_isStylusContacting) return true;
+    if (_lastStylusContactTime != null) {
+      return DateTime.now().difference(_lastStylusContactTime!).inMilliseconds < 500;
+    }
+    return false;
+  }
 
   // Custom Markdown extension set supporting LaTeX formulas, Highlights, and HTML tags
   static final md.ExtensionSet _latexExtensionSet = md.ExtensionSet(
@@ -1256,12 +1270,57 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                   child: Listener(
                     behavior: HitTestBehavior.translucent,
                     onPointerDown: (event) {
+                      final isStylus = event.kind == PointerDeviceKind.stylus ||
+                          event.kind == PointerDeviceKind.invertedStylus;
+                      final isTouch = event.kind == PointerDeviceKind.touch;
+
+                      if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                        return;
+                      }
+
+                      if (isStylus) {
+                        _isStylusContacting = true;
+                        _lastStylusContactTime = DateTime.now();
+                      }
+
                       _pendingSelectionText = '';
                       if (_activeSelection != null) {
                         setState(() => _activeSelection = null);
                       }
                     },
+                    onPointerMove: (event) {
+                      final isStylus = event.kind == PointerDeviceKind.stylus ||
+                          event.kind == PointerDeviceKind.invertedStylus;
+                      if (isStylus) {
+                        _lastStylusContactTime = DateTime.now();
+                      }
+                    },
+                    onPointerCancel: (event) {
+                      final isStylus = event.kind == PointerDeviceKind.stylus ||
+                          event.kind == PointerDeviceKind.invertedStylus;
+                      if (isStylus) {
+                        _isStylusContacting = false;
+                        _lastStylusContactTime = DateTime.now();
+                      }
+                    },
                     onPointerUp: (event) async {
+                      final isStylus = event.kind == PointerDeviceKind.stylus ||
+                          event.kind == PointerDeviceKind.invertedStylus;
+                      final isTouch = event.kind == PointerDeviceKind.touch;
+
+                      if (isStylus) {
+                        _isStylusContacting = false;
+                        _lastStylusContactTime = DateTime.now();
+                      }
+
+                      if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                        return;
+                      }
+
+                      if (settings.isStylusMode && isTouch) {
+                        return;
+                      }
+
                       final renderBox = context.findRenderObject() as RenderBox?;
                       final stackPos = renderBox != null
                           ? renderBox.globalToLocal(event.position)

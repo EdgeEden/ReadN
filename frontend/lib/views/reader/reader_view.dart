@@ -91,8 +91,24 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   PdfActiveSelectionState? _pdfActiveSelection;
   ArbitraryPointMenuState? _arbitraryMenuState;
   Timer? _touchLongPressTimer;
+  Timer? _stylusLongPressTimer;
   Offset _pointerDownGlobalPosition = Offset.zero;
   Offset _pointerDownLocalPosition = Offset.zero;
+
+  // Stylus & Palm Rejection state
+  bool _isStylusContacting = false;
+  DateTime? _lastStylusContactTime;
+  Matrix4? _stylusInteractionStartMatrix;
+  PointerDeviceKind? _lastPointerDeviceKind;
+
+  bool _isPalmRejectionActive(bool isStylusMode) {
+    if (!isStylusMode) return false;
+    if (_isStylusContacting) return true;
+    if (_lastStylusContactTime != null) {
+      return DateTime.now().difference(_lastStylusContactTime!).inMilliseconds < 500;
+    }
+    return false;
+  }
 
   // Outline (TOC) & Search state
   List<OutlineItem> _outlineItems = [];
@@ -138,6 +154,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       BrowserContextMenu.enableContextMenu();
     }
     _touchLongPressTimer?.cancel();
+    _stylusLongPressTimer?.cancel();
     _pdfController.removeListener(_onPdfControllerUpdate);
     _ocrPollTimer?.cancel();
     super.dispose();
@@ -2408,6 +2425,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           _buildPdfPageOverlays(viewerContext, pageRect, page),
       textSelectionParams: PdfTextSelectionParams(
         enabled: true,
+        enableSelectionHandles: !settings.isStylusMode,
         showContextMenuAutomatically: false,
         onTextSelectionChange: (textSelection) {
           if (!textSelection.hasSelectedText) {
@@ -2417,6 +2435,51 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           }
         },
       ),
+      onInteractionStart: (details) {
+        if (settings.isStylusMode && (_isStylusContacting || _isPalmRejectionActive(true))) {
+          if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
+            _pdfController.value = _stylusInteractionStartMatrix!;
+          }
+        }
+      },
+      onInteractionUpdate: (details) {
+        if (settings.isStylusMode && (_isStylusContacting || _isPalmRejectionActive(true))) {
+          if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
+            _pdfController.value = _stylusInteractionStartMatrix!;
+          }
+        }
+      },
+      onInteractionEnd: (details) {
+        if (settings.isStylusMode && (_isStylusContacting || _isPalmRejectionActive(true))) {
+          if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
+            _pdfController.value = _stylusInteractionStartMatrix!;
+          }
+        }
+      },
+      onGeneralTap: (context, controller, details) {
+        if (settings.isStylusMode) {
+          final isTouch = _lastPointerDeviceKind == PointerDeviceKind.touch;
+          if (isTouch) {
+            if (details.type == PdfViewerGeneralTapType.longPress ||
+                details.type == PdfViewerGeneralTapType.secondaryTap) {
+              return true; // Suppress touch long press / menu
+            }
+            if (_isPalmRejectionActive(true) && details.type == PdfViewerGeneralTapType.tap) {
+              return true; // Suppress accidental palm tap
+            }
+          } else if (_lastPointerDeviceKind == PointerDeviceKind.stylus ||
+              _lastPointerDeviceKind == PointerDeviceKind.invertedStylus) {
+            if (details.type == PdfViewerGeneralTapType.longPress) {
+              _handleSecondaryClick(details.localPosition, isTouch: true);
+              return true;
+            } else if (details.type == PdfViewerGeneralTapType.secondaryTap) {
+              _handleSecondaryClick(details.localPosition, isTouch: false);
+              return true;
+            }
+          }
+        }
+        return false;
+      },
       buildContextMenu: (viewerContext, params) {
         if (params.contextMenuFor != PdfViewerPart.selectedText) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2498,6 +2561,24 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               child: Listener(
                 behavior: HitTestBehavior.translucent,
                 onPointerDown: (event) {
+                  _lastPointerDeviceKind = event.kind;
+                  final isStylus = event.kind == PointerDeviceKind.stylus ||
+                      event.kind == PointerDeviceKind.invertedStylus;
+                  final isTouch = event.kind == PointerDeviceKind.touch;
+
+                  // Palm rejection check for touch events in stylus mode
+                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                    return; // Ignore palm touch
+                  }
+
+                  if (isStylus) {
+                    _isStylusContacting = true;
+                    _lastStylusContactTime = DateTime.now();
+                    if (_pdfController.isReady) {
+                      _stylusInteractionStartMatrix = _pdfController.value.clone();
+                    }
+                  }
+
                   if (_arbitraryMenuState != null) {
                     setState(() => _arbitraryMenuState = null);
                   }
@@ -2513,32 +2594,82 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   _pointerDownGlobalPosition = event.position;
                   _pointerDownLocalPosition = stackPos;
 
-                  if (event.buttons == kSecondaryMouseButton) {
+                  // Secondary click (mouse right-click or stylus side-button)
+                  final isSecondary = event.buttons == kSecondaryMouseButton || (event.buttons & 32 != 0);
+                  if (isSecondary) {
                     _touchLongPressTimer?.cancel();
+                    _stylusLongPressTimer?.cancel();
                     _handleSecondaryClick(stackPos, isTouch: false);
                     return;
                   }
 
-                  if (event.kind == PointerDeviceKind.touch) {
+                  if (settings.isStylusMode) {
                     _touchLongPressTimer?.cancel();
-                    _touchLongPressTimer = Timer(const Duration(milliseconds: 400), () {
-                      if (!mounted) return;
-                      if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) return;
-                      HapticFeedback.lightImpact();
-                      _handleSecondaryClick(_pointerDownLocalPosition, isTouch: true);
-                    });
+                    if (isStylus) {
+                      _stylusLongPressTimer?.cancel();
+                      _stylusLongPressTimer = Timer(const Duration(milliseconds: 400), () {
+                        if (!mounted) return;
+                        if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) return;
+                        HapticFeedback.lightImpact();
+                        _handleSecondaryClick(_pointerDownLocalPosition, isTouch: true);
+                      });
+                    }
+                    // In Stylus Mode, finger touch does NOT trigger long press menu
+                  } else {
+                    // Standard touch mode: finger long-press opens menu
+                    if (isTouch) {
+                      _touchLongPressTimer?.cancel();
+                      _touchLongPressTimer = Timer(const Duration(milliseconds: 400), () {
+                        if (!mounted) return;
+                        if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) return;
+                        HapticFeedback.lightImpact();
+                        _handleSecondaryClick(_pointerDownLocalPosition, isTouch: true);
+                      });
+                    }
                   }
                 },
                 onPointerMove: (event) {
+                  final isStylus = event.kind == PointerDeviceKind.stylus ||
+                      event.kind == PointerDeviceKind.invertedStylus;
+                  if (isStylus) {
+                    _lastStylusContactTime = DateTime.now();
+                  }
                   if ((event.position - _pointerDownGlobalPosition).distance > 10) {
                     _touchLongPressTimer?.cancel();
+                    _stylusLongPressTimer?.cancel();
                   }
                 },
                 onPointerCancel: (event) {
+                  final isStylus = event.kind == PointerDeviceKind.stylus ||
+                      event.kind == PointerDeviceKind.invertedStylus;
+                  if (isStylus) {
+                    _isStylusContacting = false;
+                    _lastStylusContactTime = DateTime.now();
+                  }
                   _touchLongPressTimer?.cancel();
+                  _stylusLongPressTimer?.cancel();
                 },
                 onPointerUp: (event) async {
+                  final isStylus = event.kind == PointerDeviceKind.stylus ||
+                      event.kind == PointerDeviceKind.invertedStylus;
+                  final isTouch = event.kind == PointerDeviceKind.touch;
+
+                  if (isStylus) {
+                    _isStylusContacting = false;
+                    _lastStylusContactTime = DateTime.now();
+                    _stylusLongPressTimer?.cancel();
+                  }
                   _touchLongPressTimer?.cancel();
+
+                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                    return;
+                  }
+
+                  // In stylus mode, finger touch should never trigger text selection floating bar
+                  if (settings.isStylusMode && isTouch) {
+                    return;
+                  }
+
                   final renderBox = viewerContext.findRenderObject() as RenderBox?;
                   final stackPos = renderBox != null
                       ? renderBox.globalToLocal(event.position)

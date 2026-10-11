@@ -143,11 +143,15 @@ class ReaderTopBar extends StatelessWidget {
           _buildViewModeSwitcher(context, theme, isDark),
           SizedBox(width: isMobile ? 6 : 10),
 
-          // 4. OCR Status & Action Button
+          // 4. Stylus Mode Button (手笔分离与防误触)
+          _buildStylusButton(context, theme, isDark, settings),
+          SizedBox(width: isMobile ? 6 : 10),
+
+          // 5. OCR Status & Action Button
           _buildOcrButton(context, theme, isDark),
           SizedBox(width: isMobile ? 6 : 10),
 
-          // 5. Theme Switcher Menu
+          // 6. Theme Switcher Menu
           PopupMenuButton<ReadingMode>(
             tooltip: '切换阅读主题',
             offset: const Offset(0, 44),
@@ -208,6 +212,82 @@ class ReaderTopBar extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildStylusButton(
+    BuildContext context,
+    ThemeData theme,
+    bool isDark,
+    ReaderSettingsProvider settings,
+  ) {
+    final isStylus = settings.isStylusMode;
+    return Tooltip(
+      message: isStylus
+          ? '手写笔模式已启用 (笔划选批注，指移动缩放，防手掌误触)'
+          : '手写笔模式 (点击开启手笔分离与防误触)',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () {
+          settings.toggleStylusMode();
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                settings.isStylusMode
+                    ? '已启用手写笔模式：笔划选批注，指移动缩放，防手掌误触'
+                    : '已关闭手写笔模式：恢复标准触摸操作',
+              ),
+              duration: const Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: EdgeInsets.symmetric(
+            horizontal: isMobile ? 8 : 10,
+            vertical: 6,
+          ),
+          decoration: BoxDecoration(
+            color: isStylus
+                ? theme.colorScheme.primary.withValues(alpha: isDark ? 0.25 : 0.12)
+                : theme.cardTheme.color,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isStylus
+                  ? theme.colorScheme.primary
+                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+              width: isStylus ? 1.5 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isStylus ? Icons.draw_rounded : Icons.draw_outlined,
+                size: 16,
+                color: isStylus
+                    ? theme.colorScheme.primary
+                    : (isDark ? Colors.grey.shade400 : Colors.grey.shade600),
+              ),
+              if (!isMobile) ...[
+                const SizedBox(width: 4),
+                Text(
+                  '手写笔',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: isStylus ? FontWeight.bold : FontWeight.normal,
+                    color: isStylus
+                        ? theme.colorScheme.primary
+                        : theme.colorScheme.onSurface,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

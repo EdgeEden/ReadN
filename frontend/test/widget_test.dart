@@ -1682,6 +1682,109 @@ End of page.
       // Compact cloud icon button exists
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('Stylus Mode persistence and provider toggle test', (WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({'readn_stylus_mode': false});
+      final storage = await StorageService.init();
+      final settingsProvider = ReaderSettingsProvider(storageService: storage);
+
+      expect(settingsProvider.isStylusMode, isFalse);
+      expect(storage.getStylusMode(), isFalse);
+
+      settingsProvider.toggleStylusMode();
+      expect(settingsProvider.isStylusMode, isTrue);
+      expect(storage.getStylusMode(), isTrue);
+
+      settingsProvider.setStylusMode(false);
+      expect(settingsProvider.isStylusMode, isFalse);
+      expect(storage.getStylusMode(), isFalse);
+    });
+
+    testWidgets('ReaderTopBar renders stylus button and toggles stylus mode', (WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({'readn_stylus_mode': false});
+      final storage = await StorageService.init();
+      final settingsProvider = ReaderSettingsProvider(storageService: storage);
+
+      final dummyDoc = DocumentModel(
+        id: 'doc-stylus',
+        filename: 'dummy.pdf',
+        title: 'Stylus Guide',
+        fileSize: 1024,
+        pageCount: 5,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: settingsProvider,
+          child: MaterialApp(
+            home: Scaffold(
+              body: ReaderTopBar(
+                document: dummyDoc,
+                currentPage: 1,
+                totalPages: 5,
+                onJumpToPage: (_) {},
+                onZoomIn: () {},
+                onZoomOut: () {},
+                onResetZoom: () {},
+                onPrevPage: () {},
+                onNextPage: () {},
+                isMobile: false,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Stylus button exists
+      expect(find.text('手写笔'), findsOneWidget);
+      expect(find.byIcon(Icons.draw_outlined), findsOneWidget);
+      expect(settingsProvider.isStylusMode, isFalse);
+
+      // Tap stylus button
+      await tester.tap(find.text('手写笔'));
+      await tester.pumpAndSettle();
+
+      expect(settingsProvider.isStylusMode, isTrue);
+      expect(find.byIcon(Icons.draw_rounded), findsOneWidget);
+    });
+
+    testWidgets('ReaderMobileProgressSheet renders stylus switch and updates setting', (WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({'readn_stylus_mode': false});
+      final storage = await StorageService.init();
+      final settingsProvider = ReaderSettingsProvider(storageService: storage);
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: settingsProvider,
+          child: MaterialApp(
+            home: Scaffold(
+              body: ReaderMobileProgressSheet(
+                currentPage: 2,
+                totalPages: 10,
+                onJumpToPage: (_) {},
+                onZoomIn: () {},
+                onZoomOut: () {},
+                onResetZoom: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('手写笔模式 (手笔分离)'), findsOneWidget);
+      expect(find.byType(Switch), findsOneWidget);
+      expect(settingsProvider.isStylusMode, isFalse);
+
+      // Toggle the switch
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(settingsProvider.isStylusMode, isTrue);
+    });
   });
 }
 

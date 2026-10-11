@@ -27,6 +27,7 @@ class ReaderSettingsProvider extends ChangeNotifier {
   bool _isLeftSidebarOpen = true;
   bool _isRightSidebarOpen = false;
   bool _showAnnotations = true;
+  bool _isStylusMode = false;
   double _zoomScale = 1.0;
   Axis _scrollDirection = Axis.vertical;
 
@@ -45,6 +46,7 @@ class ReaderSettingsProvider extends ChangeNotifier {
   ReaderSidebarTab _activeRightTab = ReaderSidebarTab.aiChat;
 
   ReaderSettingsProvider({required this.storageService}) {
+    _isStylusMode = storageService.getStylusMode();
     final savedMode = storageService.getReadingMode();
     switch (savedMode) {
       case 'sepia':
@@ -63,6 +65,7 @@ class ReaderSettingsProvider extends ChangeNotifier {
   bool get isRightSidebarOpen => _isRightSidebarOpen;
   bool get isSidebarOpen => _isRightSidebarOpen; // For backward compatibility
   bool get showAnnotations => _showAnnotations;
+  bool get isStylusMode => _isStylusMode;
   double get zoomScale => _zoomScale;
   Axis get scrollDirection => _scrollDirection;
 
@@ -173,6 +176,16 @@ class ReaderSettingsProvider extends ChangeNotifier {
   void toggleShowAnnotations() {
     _showAnnotations = !_showAnnotations;
     notifyListeners();
+  }
+
+  void setStylusMode(bool enabled) {
+    _isStylusMode = enabled;
+    storageService.setStylusMode(enabled);
+    notifyListeners();
+  }
+
+  void toggleStylusMode() {
+    setStylusMode(!_isStylusMode);
   }
 
   void setZoomScale(double zoom) {

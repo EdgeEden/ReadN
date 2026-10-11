@@ -431,6 +431,60 @@ class _ReaderMobileProgressSheetState extends State<ReaderMobileProgressSheet> {
                   ),
                 ],
               ),
+              const SizedBox(height: 12),
+              Divider(height: 1, color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+              const SizedBox(height: 10),
+
+              // 5. Stylus Mode Switch Row
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: settings.isStylusMode
+                              ? Theme.of(context).colorScheme.primary.withValues(alpha: isDark ? 0.25 : 0.12)
+                              : (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          settings.isStylusMode ? Icons.draw_rounded : Icons.draw_outlined,
+                          size: 18,
+                          color: settings.isStylusMode
+                              ? Theme.of(context).colorScheme.primary
+                              : (isDark ? Colors.grey.shade400 : Colors.grey.shade600),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '手写笔模式 (手笔分离)',
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            settings.isStylusMode ? '笔划选批注 · 指移动缩放 · 防手掌误触' : '手笔未分离 (默认触摸模式)',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  Switch(
+                    value: settings.isStylusMode,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    onChanged: (val) {
+                      settings.setStylusMode(val);
+                    },
+                  ),
+                ],
+              ),
             ],
           ),
         ),
