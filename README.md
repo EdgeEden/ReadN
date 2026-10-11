@@ -155,21 +155,6 @@ flutter build windows --release  # Windows 安装包
 flutter build apk --release      # Android APK
 ```
 
----
-
-## 📦 版本控制与部署 (Versioning & Deployment)
-
-ReadN 内置了自动化版本管理规范：
-
-- **版本自增**：运行 `python scripts/bump_version.py` 或通过 Git 提交钩子自动更新 Semantic Version（当前版本 `v1.1.27`）。
-- **一键服务器部署**：
-  ```bash
-  python scripts/deploy_to_hk.py
-  ```
-  自动化完成前端产物同步、TAR 打包、SCP 上传、远程解压以及 systemd 服务无缝热重启。
-
----
-
 ## 📝 开源协议 (License)
 
 本项目采用 [MIT License](LICENSE) 开源协议。
