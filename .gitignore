@@ -37,3 +37,10 @@ backend/*.db
 .vscode/
 .idea/
 *.swp
+
+# Agent Guidelines & Internal Scripts
+GEMINI.md
+/scripts/
+/script/
+/.agents/rules/
+.agents/

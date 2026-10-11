@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.1.4-blue.svg?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.1.27-blue.svg?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/Flutter-3.47+-02569B?style=flat-square&logo=flutter&logoColor=white" alt="Flutter">
   <img src="https://img.shields.io/badge/FastAPI-0.110+-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Platform-Web%20%7C%20Windows%20%7C%20Android-green?style=flat-square" alt="Platforms">
@@ -37,6 +37,11 @@
   - **知识卡片 (Knowledge Cards)**：划词一键提炼概念，生成可视化卡片并汇聚于侧边栏。
   - **边读边记 (Margin Notes)**：支持行间即时注解与富文本沉淀。
   - **多端实时同步**：毫秒级本地缓存，联网状态下自动双向云同步。
+- ✍️ **移动端手写笔与触控分离架构 (Stylus Mode & Hand-Pen Separation)**
+  - **原生手写笔特化 (Android 平板/手机)**：开启手写笔模式后，笔尖划过文本即选即弹菜单，无需费力长按；笔尖长按任意空白处直接插入点位批注；手指与手掌仅用于页面滚动与双指缩放，彻底杜绝手掌误触。
+  - **全平台交互兼容**：非手写笔模式下支持手指长按划词与长按批注；桌面端 (Windows/Web PC) 保持传统鼠标右键、框选交互，完全不受移动端手势干扰。
+  - **边缘自适应与防溢出**：选区浮动菜单自适应屏幕边界，选区靠近屏幕边缘时触发平滑自适应边缘滚屏。
+  - **PDF / Markdown 双模态交互体验一致**：手写笔划词选区、气泡菜单与批注卡片在 PDF 和 Markdown 引擎下保持高度一致的使用手感。
 - 🤖 **内置深度 AI 学术伴读助手**
   - 支持自定义接入 OpenAI、DeepSeek、Moonshot (Kimi) 等兼容 OpenAI 协议的模型。
   - **思维链可视化**：完整展现模型的深度思考与推理过程（Reasoning State）。
@@ -156,7 +161,7 @@ flutter build apk --release      # Android APK
 
 ReadN 内置了自动化版本管理规范：
 
-- **版本自增**：运行 `python scripts/bump_version.py` 或通过 Git 提交钩子自动更新 Semantic Version（当前版本 `v1.1.4`）。
+- **版本自增**：运行 `python scripts/bump_version.py` 或通过 Git 提交钩子自动更新 Semantic Version（当前版本 `v1.1.27`）。
 - **一键服务器部署**：
   ```bash
   python scripts/deploy_to_hk.py

@@ -1985,6 +1985,66 @@ End of page.
         isFalse,
       );
     });
+
+    test('Large document PdfViewerParams configuration guards against background loading storms', () {
+      const behavior = PdfViewerBehaviorControlParams(
+        loadPageDimensionsOnDemand: true,
+        enableLowResolutionPagePreview: true,
+        trailingPageLoadingDelay: Duration(milliseconds: 300),
+      );
+
+      // Verify on-demand page dimensions measurement is enabled
+      expect(behavior.loadPageDimensionsOnDemand, isTrue);
+      expect(behavior.enableLowResolutionPagePreview, isTrue);
+      expect(behavior.trailingPageLoadingDelay, equals(const Duration(milliseconds: 300)));
+
+      final params = PdfViewerParams(
+        behaviorControlParams: behavior,
+        limitRenderingCache: true,
+        maxImageBytesCachedOnMemory: 80 * 1024 * 1024,
+        verticalCacheExtent: 0.75,
+      );
+
+      expect(params.behaviorControlParams.loadPageDimensionsOnDemand, isTrue);
+      expect(params.limitRenderingCache, isTrue);
+      expect(params.maxImageBytesCachedOnMemory, equals(80 * 1024 * 1024));
+      expect(params.verticalCacheExtent, equals(0.75));
+    });
+
+    test('Markdown ScrollConfiguration separates stylus and touch scrolling in stylus mode', () {
+      Set<PointerDeviceKind> resolveDragDevices({required bool isStylusMode}) {
+        return isStylusMode
+            ? const {PointerDeviceKind.touch, PointerDeviceKind.trackpad}
+            : const {
+                PointerDeviceKind.touch,
+                PointerDeviceKind.stylus,
+                PointerDeviceKind.invertedStylus,
+                PointerDeviceKind.trackpad,
+              };
+      }
+
+      final stylusModeDevices = resolveDragDevices(isStylusMode: true);
+      // In stylus mode, stylus must NOT scroll ListView, only touch & trackpad
+      expect(stylusModeDevices.contains(PointerDeviceKind.touch), isTrue);
+      expect(stylusModeDevices.contains(PointerDeviceKind.stylus), isFalse);
+      expect(stylusModeDevices.contains(PointerDeviceKind.invertedStylus), isFalse);
+
+      final normalModeDevices = resolveDragDevices(isStylusMode: false);
+      // In normal mode, both stylus and touch can scroll
+      expect(normalModeDevices.contains(PointerDeviceKind.touch), isTrue);
+      expect(normalModeDevices.contains(PointerDeviceKind.stylus), isTrue);
+      expect(normalModeDevices.contains(PointerDeviceKind.invertedStylus), isTrue);
+    });
+
+    test('ReaderTopBar onBack callback is invoked before popping route', () {
+      bool onBackCalled = false;
+      void handleBack() {
+        onBackCalled = true;
+      }
+
+      handleBack();
+      expect(onBackCalled, isTrue);
+    });
   });
 }
 

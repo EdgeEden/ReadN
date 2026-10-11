@@ -1,1 +1,6 @@
-{"app_name":"frontend","version":"1.1.24","build_number":"25","package_name":"frontend"}
+{
+  "app_name": "frontend",
+  "version": "1.1.27",
+  "build_number": "28",
+  "package_name": "frontend"
+}

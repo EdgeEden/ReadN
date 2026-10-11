@@ -16,6 +16,7 @@ import '../../providers/annotation_provider.dart';
 import '../../providers/document_provider.dart';
 import '../../providers/reader_settings_provider.dart';
 import '../../services/cache/doc_cache_service.dart';
+import '../../services/stylus_pointer_adapter.dart';
 import '../../theme/app_theme.dart';
 import 'components/floating_selection_bar.dart';
 import 'components/knowledge_card_dialog.dart';
@@ -105,18 +106,12 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
 
   // Stylus & Palm Rejection state
   bool _isStylusContacting = false;
-  DateTime? _lastStylusContactTime;
   Matrix4? _stylusInteractionStartMatrix;
   PointerDeviceKind? _lastPointerDeviceKind;
   PointerDeviceKind? _currentInteractionDeviceKind;
 
   bool _isPalmRejectionActive(bool isStylusMode) {
-    if (!isStylusMode) return false;
-    if (_isStylusContacting) return true;
-    if (_lastStylusContactTime != null) {
-      return DateTime.now().difference(_lastStylusContactTime!).inMilliseconds < 500;
-    }
-    return false;
+    return StylusPointerAdapter.isPalmRejectionActive(isStylusMode, kind: _lastPointerDeviceKind);
   }
 
   // Outline (TOC) & Search state
@@ -126,6 +121,26 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
   List<SearchResultItem> _searchResults = [];
   bool _isSearching = false;
   bool _isImmersiveMode = false;
+  bool _isExiting = false;
+
+  void _prepareForExit() {
+    if (_isExiting) return;
+    _isExiting = true;
+    _stopEdgeScrollTicker();
+    _pdfActiveSelection = null;
+    _arbitraryMenuState = null;
+    _ocrPollTimer?.cancel();
+    _pageSaveDebounceTimer?.cancel();
+    _pdfController.removeListener(_onPdfControllerUpdate);
+    if (_pdfController.isReady) {
+      _pdfController.stopInteractiveViewerAnimation();
+    }
+    if (_currentPage >= 1) {
+      try {
+        context.read<DocumentProvider>().storageService.setLastReadPage(_doc.id, _currentPage);
+      } catch (_) {}
+    }
+  }
 
   @override
   void initState() {
@@ -160,17 +175,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
 
   @override
   void dispose() {
+    _prepareForExit();
     if (kIsWeb) {
       BrowserContextMenu.enableContextMenu();
-    }
-    _stopEdgeScrollTicker();
-    _pdfController.removeListener(_onPdfControllerUpdate);
-    _ocrPollTimer?.cancel();
-    _pageSaveDebounceTimer?.cancel();
-    if (_currentPage >= 1) {
-      try {
-        context.read<DocumentProvider>().storageService.setLastReadPage(_doc.id, _currentPage);
-      } catch (_) {}
     }
     _currentPageNotifier.dispose();
     super.dispose();
@@ -2155,41 +2162,47 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
               }
               return KeyEventResult.ignored;
             },
-            child: Scaffold(
-              backgroundColor: canvasBg,
-              bottomNavigationBar: isMobile && !_isImmersiveMode
-                ? ValueListenableBuilder<int>(
-                    valueListenable: _currentPageNotifier,
-                    builder: (context, curPage, _) => ReaderBottomBar(
-                      currentPage: curPage,
-                      totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
-                      onTabSelected: (tab) => _openMobileSheet(context, tab),
-                      onOpenProgress: () => _openMobileProgressSheet(context),
-                      isMarkdownMode: _viewMode == ReaderViewMode.markdown,
-                    ),
-                  )
-                : null,
-            body: SafeArea(
-              top: !_isImmersiveMode,
-              bottom: !_isImmersiveMode,
-              child: Stack(
-                children: [
-                  Column(
-                    children: [
-                      // Top Bar
-                      if (!_isImmersiveMode)
-                        ValueListenableBuilder<int>(
-                          valueListenable: _currentPageNotifier,
-                          builder: (context, curPage, _) => ReaderTopBar(
-                            isMobile: isMobile,
-                            document: _doc,
-                            ocrProgress: _ocrStatusInfo,
-                            currentPage: curPage,
-                            totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
-                            onJumpToPage: _onJumpToPage,
-                            onOpenOcr: _showOcrDialog,
-                            viewMode: _viewMode,
-                            onViewModeChanged: _onViewModeChanged,
+            child: PopScope(
+              canPop: true,
+              onPopInvokedWithResult: (didPop, result) {
+                _prepareForExit();
+              },
+              child: Scaffold(
+                backgroundColor: canvasBg,
+                bottomNavigationBar: isMobile && !_isImmersiveMode
+                  ? ValueListenableBuilder<int>(
+                      valueListenable: _currentPageNotifier,
+                      builder: (context, curPage, _) => ReaderBottomBar(
+                        currentPage: curPage,
+                        totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                        onTabSelected: (tab) => _openMobileSheet(context, tab),
+                        onOpenProgress: () => _openMobileProgressSheet(context),
+                        isMarkdownMode: _viewMode == ReaderViewMode.markdown,
+                      ),
+                    )
+                  : null,
+              body: SafeArea(
+                top: !_isImmersiveMode,
+                bottom: !_isImmersiveMode,
+                child: Stack(
+                  children: [
+                    Column(
+                      children: [
+                        // Top Bar
+                        if (!_isImmersiveMode)
+                          ValueListenableBuilder<int>(
+                            valueListenable: _currentPageNotifier,
+                            builder: (context, curPage, _) => ReaderTopBar(
+                              isMobile: isMobile,
+                              document: _doc,
+                              ocrProgress: _ocrStatusInfo,
+                              currentPage: curPage,
+                              totalPages: _totalPages > 0 ? _totalPages : (_doc.pageCount > 0 ? _doc.pageCount : 1),
+                              onJumpToPage: _onJumpToPage,
+                              onOpenOcr: _showOcrDialog,
+                              onBack: _prepareForExit,
+                              viewMode: _viewMode,
+                              onViewModeChanged: _onViewModeChanged,
                             hasMarkdown: _doc.hasMarkdown || (_markdownContent != null && _markdownContent!.trim().isNotEmpty),
                             onZoomIn: _handleZoomIn,
                             onZoomOut: _handleZoomOut,
@@ -2409,6 +2422,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
             ),
           ),
           ),
+          ),
         );
       },
     );
@@ -2545,6 +2559,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
   }
 
   Widget _buildPdfViewer(Color canvasBg, ColorFilter? pdfFilter, bool isDark) {
+    if (_isExiting) return const SizedBox.shrink();
     final settings = context.read<ReaderSettingsProvider>();
     final activeTheme = Theme.of(context);
     final reloadToken = '${_doc.id}_${_doc.ocrStatus}_${_doc.updatedAt.millisecondsSinceEpoch}';
@@ -2552,6 +2567,14 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
     final viewerParams = PdfViewerParams(
       backgroundColor: Colors.transparent,
       margin: 16.0,
+      behaviorControlParams: const PdfViewerBehaviorControlParams(
+        loadPageDimensionsOnDemand: true,
+        enableLowResolutionPagePreview: true,
+        trailingPageLoadingDelay: Duration(milliseconds: 300),
+      ),
+      limitRenderingCache: true,
+      maxImageBytesCachedOnMemory: 80 * 1024 * 1024,
+      verticalCacheExtent: 0.75,
       calculateInitialPageNumber: (document, controller) => _currentPage.clamp(1, max(1, document.pages.length)),
       pageDropShadow: isDark
           ? const BoxShadow(color: Colors.transparent)
@@ -2580,7 +2603,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
         enabled: true,
         showContextMenuAutomatically: false,
         onTextSelectionChange: (textSelection) {
-          if (settings.isStylusMode && _lastPointerDeviceKind == PointerDeviceKind.touch) {
+          final isTouch = StylusPointerAdapter.isTouch(_lastPointerDeviceKind ?? PointerDeviceKind.touch);
+          if (settings.isStylusMode && isTouch) {
             if (textSelection.hasSelectedText) {
               _pdfController.textSelectionDelegate.clearTextSelection();
             }
@@ -2594,10 +2618,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
         },
       ),
       onInteractionStart: (details) {
-        if (settings.isStylusMode &&
-            (_currentInteractionDeviceKind == PointerDeviceKind.stylus ||
-                _isStylusContacting ||
-                _isPalmRejectionActive(true))) {
+        final isStylus = StylusPointerAdapter.isStylus(_currentInteractionDeviceKind) ||
+            _isStylusContacting ||
+            StylusPointerAdapter.isStylusContacting;
+        if (settings.isStylusMode && isStylus) {
           _pdfController.stopInteractiveViewerAnimation();
           if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
             _pdfController.value = _stylusInteractionStartMatrix!;
@@ -2605,10 +2629,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
         }
       },
       onInteractionUpdate: (details) {
-        if (settings.isStylusMode &&
-            (_currentInteractionDeviceKind == PointerDeviceKind.stylus ||
-                _isStylusContacting ||
-                _isPalmRejectionActive(true))) {
+        final isStylus = StylusPointerAdapter.isStylus(_currentInteractionDeviceKind) ||
+            _isStylusContacting ||
+            StylusPointerAdapter.isStylusContacting;
+        if (settings.isStylusMode && isStylus) {
           _pdfController.stopInteractiveViewerAnimation();
           if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
             _pdfController.value = _stylusInteractionStartMatrix!;
@@ -2616,10 +2640,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
         }
       },
       onInteractionEnd: (details) {
-        if (settings.isStylusMode &&
-            (_currentInteractionDeviceKind == PointerDeviceKind.stylus ||
-                _isStylusContacting ||
-                _isPalmRejectionActive(true))) {
+        final isStylus = StylusPointerAdapter.isStylus(_currentInteractionDeviceKind) ||
+            _isStylusContacting ||
+            StylusPointerAdapter.isStylusContacting;
+        if (settings.isStylusMode && isStylus) {
           _pdfController.stopInteractiveViewerAnimation();
           if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
             _pdfController.value = _stylusInteractionStartMatrix!;
@@ -2635,15 +2659,15 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
       },
       onGeneralTap: (context, controller, details) {
         if (settings.isStylusMode) {
-          final isTouch = _lastPointerDeviceKind == PointerDeviceKind.touch;
+          final isTouch = StylusPointerAdapter.isTouch(_lastPointerDeviceKind ?? PointerDeviceKind.touch);
           if (isTouch) {
             if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
               _pdfController.textSelectionDelegate.clearTextSelection();
             }
             return true; // Suppress touch word selection, double-tap, long-press, context menus
           }
-          if (_lastPointerDeviceKind == PointerDeviceKind.stylus ||
-              _lastPointerDeviceKind == PointerDeviceKind.invertedStylus) {
+          final isStylus = StylusPointerAdapter.isStylus(_lastPointerDeviceKind ?? PointerDeviceKind.mouse);
+          if (isStylus) {
             if (details.type == PdfViewerGeneralTapType.longPress) {
               if (details.tapOn == PdfViewerPart.background) {
                 _handleSecondaryClick(details.localPosition, isTouch: true);
@@ -2747,11 +2771,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
               child: Listener(
                 behavior: HitTestBehavior.translucent,
                 onPointerDown: (event) {
-                  final isStylus = event.kind == PointerDeviceKind.stylus ||
-                      event.kind == PointerDeviceKind.invertedStylus;
-                  final isTouch = event.kind == PointerDeviceKind.touch;
+                  final isStylus = StylusPointerAdapter.isStylus(event.kind);
+                  final isTouch = StylusPointerAdapter.isTouch(event.kind);
 
-                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                  if (isTouch && StylusPointerAdapter.isPalmRejectionActive(settings.isStylusMode, kind: event.kind)) {
                     return; // Ignore palm touch completely
                   }
 
@@ -2769,7 +2792,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
                   if (isStylus) {
                     _currentInteractionDeviceKind = PointerDeviceKind.stylus;
                     _isStylusContacting = true;
-                    _lastStylusContactTime = DateTime.now();
                     _pdfController.stopInteractiveViewerAnimation();
                     if (_pdfController.isReady) {
                       _stylusInteractionStartMatrix = _pdfController.value.clone();
@@ -2809,11 +2831,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
                   // Tap dismissals are cleanly handled onPointerUp.
                 },
                 onPointerMove: (event) {
-                  final isStylus = event.kind == PointerDeviceKind.stylus ||
-                      event.kind == PointerDeviceKind.invertedStylus;
-                  final isTouch = event.kind == PointerDeviceKind.touch;
+                  final isStylus = StylusPointerAdapter.isStylus(event.kind);
+                  final isTouch = StylusPointerAdapter.isTouch(event.kind);
 
-                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                  if (isTouch && StylusPointerAdapter.isPalmRejectionActive(settings.isStylusMode, kind: event.kind)) {
                     return;
                   }
 
@@ -2825,7 +2846,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
                   _currentPointerLocalPosition = stackPos;
 
                   if (isStylus) {
-                    _lastStylusContactTime = DateTime.now();
                     if (_edgeScrollTicker == null || !_edgeScrollTicker!.isActive) {
                       if (_pdfController.isReady && _stylusInteractionStartMatrix != null) {
                         _pdfController.stopInteractiveViewerAnimation();
@@ -2852,17 +2872,15 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
                   _isPointerDown = false;
                   _stopEdgeScrollTicker();
 
-                  final isStylus = event.kind == PointerDeviceKind.stylus ||
-                      event.kind == PointerDeviceKind.invertedStylus;
-                  final isTouch = event.kind == PointerDeviceKind.touch;
+                  final isStylus = StylusPointerAdapter.isStylus(event.kind);
+                  final isTouch = StylusPointerAdapter.isTouch(event.kind);
 
-                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                  if (isTouch && StylusPointerAdapter.isPalmRejectionActive(settings.isStylusMode, kind: event.kind)) {
                     return;
                   }
 
                   if (isStylus) {
                     _isStylusContacting = false;
-                    _lastStylusContactTime = DateTime.now();
                     _pdfController.stopInteractiveViewerAnimation();
                     if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
                       _pdfController.value = _stylusInteractionStartMatrix!;
@@ -2874,17 +2892,15 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with TickerProviderSt
                   _isPointerDown = false;
                   _stopEdgeScrollTicker();
 
-                  final isStylus = event.kind == PointerDeviceKind.stylus ||
-                      event.kind == PointerDeviceKind.invertedStylus;
-                  final isTouch = event.kind == PointerDeviceKind.touch;
+                  final isStylus = StylusPointerAdapter.isStylus(event.kind);
+                  final isTouch = StylusPointerAdapter.isTouch(event.kind);
 
-                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                  if (isTouch && StylusPointerAdapter.isPalmRejectionActive(settings.isStylusMode, kind: event.kind)) {
                     return;
                   }
 
                   if (isStylus) {
                     _isStylusContacting = false;
-                    _lastStylusContactTime = DateTime.now();
                     _pdfController.stopInteractiveViewerAnimation();
                     if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
                       _pdfController.value = _stylusInteractionStartMatrix!;

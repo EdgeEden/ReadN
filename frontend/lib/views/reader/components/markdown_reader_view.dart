@@ -14,6 +14,7 @@ import '../../../providers/annotation_provider.dart';
 import '../../../providers/document_provider.dart';
 import '../../../providers/reader_settings_provider.dart';
 import '../../../services/cache/doc_cache_service.dart';
+import '../../../services/stylus_pointer_adapter.dart';
 import '../../../theme/app_theme.dart';
 import 'floating_selection_bar.dart';
 import 'knowledge_card_dialog.dart';
@@ -59,12 +60,12 @@ class SearchMatchItem {
   });
 }
 
-class MarkdownActiveSelection {
+class MarkdownActiveSelectionState {
   final String text;
   final int pageNumber;
   final Offset position;
 
-  const MarkdownActiveSelection({
+  const MarkdownActiveSelectionState({
     required this.text,
     required this.pageNumber,
     required this.position,
@@ -106,26 +107,17 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
   final double _estimatedAverageHeight = 1000.0;
 
   // Active text selection state for floating menu
-  MarkdownActiveSelection? _activeSelection;
+  MarkdownActiveSelectionState? _activeSelection;
   String _pendingSelectionText = '';
-  int _pendingSelectionPage = 1;
+  int _lastSelectedPageNumber = 1;
+  Offset _pointerDownGlobalPosition = Offset.zero;
+  bool _wasSelectionActiveOnPointerDown = false;
   bool _isProgrammaticScrolling = false;
   int? _lastReportedPage;
   bool _hasExplicitPageMarkers = false;
 
-  // Stylus & Palm Rejection state
-  bool _isStylusContacting = false;
-  DateTime? _lastStylusContactTime;
+  // Stylus state
   PointerDeviceKind? _lastPointerDeviceKind;
-
-  bool _isPalmRejectionActive(bool isStylusMode) {
-    if (!isStylusMode) return false;
-    if (_isStylusContacting) return true;
-    if (_lastStylusContactTime != null) {
-      return DateTime.now().difference(_lastStylusContactTime!).inMilliseconds < 500;
-    }
-    return false;
-  }
 
   // Custom Markdown extension set supporting LaTeX formulas, Highlights, and HTML tags
   static final md.ExtensionSet _latexExtensionSet = md.ExtensionSet(
@@ -205,8 +197,10 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
 
   bool _onScrollNotification(ScrollNotification notification) {
     if (_isProgrammaticScrolling) return false;
-    if (_activeSelection != null && notification is ScrollUpdateNotification) {
-      setState(() => _activeSelection = null);
+    if (notification is ScrollUpdateNotification) {
+      if (_activeSelection != null) {
+        setState(() => _activeSelection = null);
+      }
     }
     if (notification is ScrollUpdateNotification || notification is ScrollEndNotification) {
       _detectVisiblePage();
@@ -1156,15 +1150,31 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
 
 
 
-  Widget _buildMarkdownContextMenu(
-    BuildContext context,
-    SelectableRegionState selectableRegionState,
-    int pageNumber,
-  ) {
-    // Suppress native selection context menu to prevent duplicate floating bars;
-    // Selection floating bar is unified and managed exclusively by Stack's _activeSelection.
-    return const SizedBox.shrink();
+  void _handleEdgeScroll(Offset globalPos) {
+    if (!_scrollController.hasClients || _chunks.isEmpty) return;
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final localPos = box.globalToLocal(globalPos);
+    const double edgeThreshold = 60.0;
+    const double maxStep = 18.0;
+
+    if (localPos.dy < edgeThreshold && localPos.dy > 0) {
+      final intensity = (edgeThreshold - localPos.dy) / edgeThreshold;
+      final step = maxStep * intensity;
+      final target = (_scrollController.offset - step).clamp(0.0, _scrollController.position.maxScrollExtent);
+      if (target != _scrollController.offset) {
+        _scrollController.jumpTo(target);
+      }
+    } else if (localPos.dy > box.size.height - edgeThreshold && localPos.dy < box.size.height) {
+      final intensity = (localPos.dy - (box.size.height - edgeThreshold)) / edgeThreshold;
+      final step = maxStep * intensity;
+      final target = (_scrollController.offset + step).clamp(0.0, _scrollController.position.maxScrollExtent);
+      if (target != _scrollController.offset) {
+        _scrollController.jumpTo(target);
+      }
+    }
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -1272,152 +1282,156 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                     behavior: HitTestBehavior.translucent,
                     onPointerDown: (event) {
                       _lastPointerDeviceKind = event.kind;
-                      final isStylus = event.kind == PointerDeviceKind.stylus ||
-                          event.kind == PointerDeviceKind.invertedStylus;
-                      final isTouch = event.kind == PointerDeviceKind.touch;
+                      final isTouch = StylusPointerAdapter.isTouch(event.kind);
 
-                      if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                      if (isTouch && StylusPointerAdapter.isPalmRejectionActive(settings.isStylusMode, kind: event.kind)) {
                         return;
                       }
 
-                      if (isStylus) {
-                        _isStylusContacting = true;
-                        _lastStylusContactTime = DateTime.now();
-                      }
-
-                      _pendingSelectionText = '';
+                      _pointerDownGlobalPosition = event.position;
+                      _wasSelectionActiveOnPointerDown = _activeSelection != null || _pendingSelectionText.isNotEmpty;
                       if (_activeSelection != null) {
                         setState(() => _activeSelection = null);
                       }
                     },
                     onPointerMove: (event) {
-                      final isStylus = event.kind == PointerDeviceKind.stylus ||
-                          event.kind == PointerDeviceKind.invertedStylus;
-                      if (isStylus) {
-                        _lastStylusContactTime = DateTime.now();
+                      final isStylus = StylusPointerAdapter.isStylus(event.kind);
+                      final isTouch = StylusPointerAdapter.isTouch(event.kind);
+                      if (isTouch && StylusPointerAdapter.isPalmRejectionActive(settings.isStylusMode, kind: event.kind)) {
+                        return;
+                      }
+                      // Edge auto-scrolling during text selection or stylus drawing
+                      if (_pendingSelectionText.isNotEmpty || (settings.isStylusMode && isStylus)) {
+                        _handleEdgeScroll(event.position);
                       }
                     },
                     onPointerCancel: (event) {
-                      final isStylus = event.kind == PointerDeviceKind.stylus ||
-                          event.kind == PointerDeviceKind.invertedStylus;
-                      if (isStylus) {
-                        _isStylusContacting = false;
-                        _lastStylusContactTime = DateTime.now();
-                      }
+                      _wasSelectionActiveOnPointerDown = false;
                     },
                     onPointerUp: (event) async {
-                      final isStylus = event.kind == PointerDeviceKind.stylus ||
-                          event.kind == PointerDeviceKind.invertedStylus;
-                      final isTouch = event.kind == PointerDeviceKind.touch;
+                      final isTouch = StylusPointerAdapter.isTouch(event.kind);
 
-                      if (isStylus) {
-                        _isStylusContacting = false;
-                        _lastStylusContactTime = DateTime.now();
-                      }
-
-                      if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
+                      if (isTouch && StylusPointerAdapter.isPalmRejectionActive(settings.isStylusMode, kind: event.kind)) {
                         return;
                       }
 
+                      // In stylus mode, finger touch should never trigger text selection floating bar
                       if (settings.isStylusMode && isTouch) {
+                        if (_activeSelection != null && mounted) {
+                          setState(() => _activeSelection = null);
+                        }
+                        _wasSelectionActiveOnPointerDown = false;
                         return;
                       }
 
-                      final renderBox = context.findRenderObject() as RenderBox?;
-                      final stackPos = renderBox != null
-                          ? renderBox.globalToLocal(event.position)
-                          : event.localPosition;
-                      await Future.delayed(const Duration(milliseconds: 50));
+                      // Tap outside dismissal: if there was active selection and user simply tapped
+                      final isTap = (event.position - _pointerDownGlobalPosition).distance < 10;
+                      if (_wasSelectionActiveOnPointerDown && isTap && _pendingSelectionText.isEmpty) {
+                        _wasSelectionActiveOnPointerDown = false;
+                        if (_activeSelection != null && mounted) {
+                          setState(() => _activeSelection = null);
+                        }
+                        return;
+                      }
+                      _wasSelectionActiveOnPointerDown = false;
+
+                      final box = context.findRenderObject() as RenderBox?;
+                      final localPos = box != null ? box.globalToLocal(event.position) : event.position;
+
+                      // Wait 30ms for SelectionArea to update _pendingSelectionText
+                      await Future.delayed(const Duration(milliseconds: 30));
                       if (!mounted) return;
-                      if (_pendingSelectionText.isNotEmpty) {
+
+                      final text = _pendingSelectionText.trim();
+                      if (text.isNotEmpty) {
                         setState(() {
-                          _activeSelection = MarkdownActiveSelection(
-                            text: _pendingSelectionText,
-                            pageNumber: _pendingSelectionPage,
-                            position: stackPos,
+                          _activeSelection = MarkdownActiveSelectionState(
+                            text: text,
+                            pageNumber: _lastSelectedPageNumber,
+                            position: localPos,
                           );
                         });
                       }
                     },
-                    child: ListView.builder(
-                      controller: _scrollController,
-                      // ignore: deprecated_member_use
-                      cacheExtent: 1200,
-                      padding: EdgeInsets.symmetric(horizontal: isMobile ? 8 : 24, vertical: isMobile ? 12 : 20),
-                      itemCount: _chunks.length,
-                      itemBuilder: (context, index) {
-                        final chunk = _chunks[index];
+                    child: ScrollConfiguration(
+                      behavior: ScrollConfiguration.of(context).copyWith(
+                        dragDevices: settings.isStylusMode
+                            ? const {PointerDeviceKind.touch, PointerDeviceKind.trackpad}
+                            : const {
+                                PointerDeviceKind.touch,
+                                PointerDeviceKind.stylus,
+                                PointerDeviceKind.invertedStylus,
+                                PointerDeviceKind.trackpad,
+                              },
+                      ),
+                      child: ListView.builder(
+                        controller: _scrollController,
+                        // ignore: deprecated_member_use
+                        cacheExtent: 1200,
+                        padding: EdgeInsets.symmetric(horizontal: isMobile ? 8 : 24, vertical: isMobile ? 12 : 20),
+                        itemCount: _chunks.length,
+                        itemBuilder: (context, index) {
+                          final chunk = _chunks[index];
 
-                        return _buildPageCard(
-                          context: context,
-                          chunk: chunk,
-                          index: index,
-                          theme: theme,
-                          isDark: isDark,
-                          isSepia: isSepia,
-                          cardBg: cardBg,
-                          textColor: textColor,
-                          codeBg: codeBg,
-                          baseFontSize: baseFontSize,
-                          cardMaxWidth: cardMaxWidth,
-                        );
-                      },
+                          return _buildPageCard(
+                            context: context,
+                            chunk: chunk,
+                            index: index,
+                            theme: theme,
+                            isDark: isDark,
+                            isSepia: isSepia,
+                            cardBg: cardBg,
+                            textColor: textColor,
+                            codeBg: codeBg,
+                            baseFontSize: baseFontSize,
+                            cardMaxWidth: cardMaxWidth,
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
-
-          // Auto-Popup Floating Toolbar following cursor when text is selected in Markdown mode (Appears on pointer release)
           if (_activeSelection != null)
-            LayoutBuilder(
-              builder: (context, constraints) {
-                  final isMobile = constraints.maxWidth < 700;
-                  return Stack(
-                    children: [
-                      _buildPositionedFloatingBar(
-                        context: context,
-                        pointerPos: _activeSelection!.position,
-                        containerSize: Size(constraints.maxWidth, constraints.maxHeight),
-                        isMobile: isMobile,
-                        child: Material(
-                          type: MaterialType.transparency,
-                          child: FloatingSelectionBar(
-                            selectedText: _activeSelection!.text,
-                            readingMode: settings.readingMode,
-                            isMobile: isMobile,
-                            onHighlight: (colorHex) {
-                            final sel = _activeSelection;
-                            if (sel != null) {
-                              setState(() => _activeSelection = null);
-                              _createHighlightFromSelection(
-                                sel.text,
-                                colorHex,
-                                sel.pageNumber,
-                              );
-                            }
-                          },
-                          onAddNote: () {
-                            final sel = _activeSelection;
-                            if (sel != null) {
-                              setState(() => _activeSelection = null);
-                              _showNoteDialogForSelection(sel.text, sel.pageNumber);
-                            }
-                          },
-                          onAskAi: () {
-                            final sel = _activeSelection;
-                            if (sel != null) {
-                              setState(() => _activeSelection = null);
-                              widget.onAskAi?.call(sel.text, sel.pageNumber);
-                            }
-                          },
-                          onDismiss: () {
-                            setState(() => _activeSelection = null);
-                          },
-                        ),
-                      ),
-                    ),
-                  ],
-                );
-              },
+            _buildPositionedFloatingBar(
+              context: context,
+              pointerPos: _activeSelection!.position,
+              containerSize: Size(screenWidth, MediaQuery.sizeOf(context).height),
+              isMobile: isMobile,
+              child: Material(
+                type: MaterialType.transparency,
+                child: FloatingSelectionBar(
+                  selectedText: _activeSelection!.text,
+                  readingMode: settings.readingMode,
+                  isMobile: isMobile,
+                  onHighlight: (colorHex) {
+                    final selText = _activeSelection!.text;
+                    final pageNum = _activeSelection!.pageNumber;
+                    setState(() => _activeSelection = null);
+                    _createHighlightFromSelection(
+                      selText,
+                      colorHex,
+                      pageNum,
+                    );
+                  },
+                  onAddNote: () {
+                    final selText = _activeSelection!.text;
+                    final pageNum = _activeSelection!.pageNumber;
+                    setState(() => _activeSelection = null);
+                    _showNoteDialogForSelection(selText, pageNum);
+                  },
+                  onAskAi: widget.onAskAi != null
+                      ? () {
+                          final selText = _activeSelection!.text;
+                          final pageNum = _activeSelection!.pageNumber;
+                          setState(() => _activeSelection = null);
+                          widget.onAskAi!(selText, pageNum);
+                        }
+                      : null,
+                  onDismiss: () {
+                    setState(() => _activeSelection = null);
+                  },
+                ),
+              ),
             ),
         ],
       ),
@@ -1509,7 +1523,18 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: cardMaxWidth),
         child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
           onSecondaryTapUp: (details) {
+            _showMarkdownCardContextMenu(context, details.globalPosition, chunk.pageNumber);
+          },
+          onLongPressStart: (details) {
+            // 1. If currently selecting text or has active selection, don't trigger blank card menu
+            if (_pendingSelectionText.trim().isNotEmpty) return;
+            // 2. In stylus mode, touch long press must be completely ignored
+            if (settings.isStylusMode && StylusPointerAdapter.isTouch(_lastPointerDeviceKind ?? PointerDeviceKind.touch)) {
+              return;
+            }
+            // 3. Stylus long press in stylus mode, or finger/stylus in non-stylus mode:
             _showMarkdownCardContextMenu(context, details.globalPosition, chunk.pageNumber);
           },
           child: Container(
@@ -1773,22 +1798,26 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
               // Markdown Content for this page with responsive SelectionArea
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: isMobile ? 14 : 28, vertical: isMobile ? 16 : 22),
-                child: SelectionArea(
-                  onSelectionChanged: (SelectedContent? content) {
-                    if (settings.isStylusMode &&
-                        (_lastPointerDeviceKind == PointerDeviceKind.touch || _isPalmRejectionActive(true))) {
-                      _pendingSelectionText = '';
-                      return;
-                    }
-                    final selText = content?.plainText.trim() ?? '';
-                    if (selText.isNotEmpty) {
+                child: StylusSelectionFilter(
+                  filterTouch: settings.isStylusMode,
+                  child: SelectionArea(
+                    onSelectionChanged: (SelectedContent? content) {
+                      final isTouch = StylusPointerAdapter.isTouch(_lastPointerDeviceKind ?? PointerDeviceKind.touch);
+                      if (settings.isStylusMode && isTouch) {
+                        return;
+                      }
+                      final selText = content?.plainText.trim() ?? '';
                       _pendingSelectionText = selText;
-                      _pendingSelectionPage = chunk.pageNumber;
-                    }
-                  },
-                  contextMenuBuilder: (context, selectableRegionState) =>
-                      _buildMarkdownContextMenu(context, selectableRegionState, chunk.pageNumber),
-                  child: MarkdownBody(
+                      if (selText.isNotEmpty) {
+                        _lastSelectedPageNumber = chunk.pageNumber;
+                      } else {
+                        if (_activeSelection != null && mounted) {
+                          setState(() => _activeSelection = null);
+                        }
+                      }
+                    },
+                    contextMenuBuilder: (context, selectableRegionState) => const SizedBox.shrink(),
+                    child: MarkdownBody(
                     data: displayContent,
                     selectable: false,
                     softLineBreak: true,
@@ -1950,6 +1979,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                   ),
                 ),
               ),
+            ),
             ],
           ),
         ),

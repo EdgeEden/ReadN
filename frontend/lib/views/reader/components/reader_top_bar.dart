@@ -26,6 +26,7 @@ class ReaderTopBar extends StatelessWidget {
   final ValueChanged<ReaderViewMode>? onViewModeChanged;
   final bool hasMarkdown;
   final bool isMobile;
+  final VoidCallback? onBack;
 
   const ReaderTopBar({
     super.key,
@@ -44,6 +45,7 @@ class ReaderTopBar extends StatelessWidget {
     this.onViewModeChanged,
     this.hasMarkdown = false,
     this.isMobile = false,
+    this.onBack,
   });
 
   @override
@@ -76,7 +78,10 @@ class ReaderTopBar extends StatelessWidget {
           // 1. Back to Bookshelf
           InkWell(
             borderRadius: BorderRadius.circular(10),
-            onTap: () => Navigator.of(context).pop(),
+            onTap: () {
+              onBack?.call();
+              Navigator.of(context).pop();
+            },
             child: Container(
               padding: EdgeInsets.symmetric(horizontal: isMobile ? 8 : 10, vertical: 6),
               decoration: BoxDecoration(

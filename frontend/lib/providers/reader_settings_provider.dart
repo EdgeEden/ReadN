@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../services/storage_service.dart';
+import '../services/stylus_pointer_adapter.dart';
 import '../theme/app_theme.dart';
 
 enum ReaderSidebarTab {
@@ -49,6 +50,7 @@ class ReaderSettingsProvider extends ChangeNotifier {
   ReaderSettingsProvider({required this.storageService}) {
     final isAndroid = !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
     _isStylusMode = isAndroid && storageService.getStylusMode();
+    StylusPointerAdapter.isStylusModeActive = _isStylusMode;
     final savedMode = storageService.getReadingMode();
     switch (savedMode) {
       case 'sepia':
@@ -183,6 +185,7 @@ class ReaderSettingsProvider extends ChangeNotifier {
   void setStylusMode(bool enabled) {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
     _isStylusMode = enabled;
+    StylusPointerAdapter.isStylusModeActive = enabled;
     storageService.setStylusMode(enabled);
     notifyListeners();
   }

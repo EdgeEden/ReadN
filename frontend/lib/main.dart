@@ -11,11 +11,13 @@ import 'services/api_service.dart';
 import 'services/storage_service.dart';
 import 'services/cache/doc_cache_service.dart';
 import 'services/cache/annotation_cache_service.dart';
+import 'services/stylus_pointer_adapter.dart';
 import 'theme/app_theme.dart';
 import 'views/bookshelf/bookshelf_view.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  StylusPointerAdapter.init();
   
   // Parallelize pdfrx, storage service, and cache service initialization
   final docCacheService = DocCacheService();
