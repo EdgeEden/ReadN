@@ -100,6 +100,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   DateTime? _lastStylusContactTime;
   Matrix4? _stylusInteractionStartMatrix;
   PointerDeviceKind? _lastPointerDeviceKind;
+  PointerDeviceKind? _currentInteractionDeviceKind;
 
   bool _isPalmRejectionActive(bool isStylusMode) {
     if (!isStylusMode) return false;
@@ -162,9 +163,19 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   void _onPdfControllerUpdate() {
     if (!mounted || _viewMode != ReaderViewMode.pdf || !_pdfController.isReady) return;
+    final settings = context.read<ReaderSettingsProvider>();
+    if (settings.isStylusMode &&
+        (_currentInteractionDeviceKind == PointerDeviceKind.stylus ||
+            _isStylusContacting ||
+            _isPalmRejectionActive(true))) {
+      if (_stylusInteractionStartMatrix != null) {
+        _pdfController.stopInteractiveViewerAnimation();
+        _pdfController.value = _stylusInteractionStartMatrix!;
+        return;
+      }
+    }
     if (_basePdfZoom > 0) {
       final ratio = _pdfController.currentZoom / _basePdfZoom;
-      final settings = context.read<ReaderSettingsProvider>();
       if ((ratio - settings.zoomScale).abs() > 0.03) {
         settings.setZoomScale(ratio);
       }
@@ -2425,9 +2436,15 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           _buildPdfPageOverlays(viewerContext, pageRect, page),
       textSelectionParams: PdfTextSelectionParams(
         enabled: true,
-        enableSelectionHandles: !settings.isStylusMode,
         showContextMenuAutomatically: false,
         onTextSelectionChange: (textSelection) {
+          if (settings.isStylusMode &&
+              (_lastPointerDeviceKind == PointerDeviceKind.touch || _isPalmRejectionActive(true))) {
+            if (textSelection.hasSelectedText) {
+              _pdfController.textSelectionDelegate.clearTextSelection();
+            }
+            return;
+          }
           if (!textSelection.hasSelectedText) {
             if (_pdfActiveSelection != null && mounted) {
               setState(() => _pdfActiveSelection = null);
@@ -2436,38 +2453,55 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         },
       ),
       onInteractionStart: (details) {
-        if (settings.isStylusMode && (_isStylusContacting || _isPalmRejectionActive(true))) {
+        if (settings.isStylusMode &&
+            (_currentInteractionDeviceKind == PointerDeviceKind.stylus ||
+                _isStylusContacting ||
+                _isPalmRejectionActive(true))) {
+          _pdfController.stopInteractiveViewerAnimation();
           if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
             _pdfController.value = _stylusInteractionStartMatrix!;
           }
         }
       },
       onInteractionUpdate: (details) {
-        if (settings.isStylusMode && (_isStylusContacting || _isPalmRejectionActive(true))) {
+        if (settings.isStylusMode &&
+            (_currentInteractionDeviceKind == PointerDeviceKind.stylus ||
+                _isStylusContacting ||
+                _isPalmRejectionActive(true))) {
+          _pdfController.stopInteractiveViewerAnimation();
           if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
             _pdfController.value = _stylusInteractionStartMatrix!;
           }
         }
       },
       onInteractionEnd: (details) {
-        if (settings.isStylusMode && (_isStylusContacting || _isPalmRejectionActive(true))) {
+        if (settings.isStylusMode &&
+            (_currentInteractionDeviceKind == PointerDeviceKind.stylus ||
+                _isStylusContacting ||
+                _isPalmRejectionActive(true))) {
+          _pdfController.stopInteractiveViewerAnimation();
           if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
             _pdfController.value = _stylusInteractionStartMatrix!;
           }
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _pdfController.stopInteractiveViewerAnimation();
+            if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
+              _pdfController.value = _stylusInteractionStartMatrix!;
+            }
+          });
         }
       },
       onGeneralTap: (context, controller, details) {
         if (settings.isStylusMode) {
           final isTouch = _lastPointerDeviceKind == PointerDeviceKind.touch;
           if (isTouch) {
-            if (details.type == PdfViewerGeneralTapType.longPress ||
-                details.type == PdfViewerGeneralTapType.secondaryTap) {
-              return true; // Suppress touch long press / menu
+            if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
+              _pdfController.textSelectionDelegate.clearTextSelection();
             }
-            if (_isPalmRejectionActive(true) && details.type == PdfViewerGeneralTapType.tap) {
-              return true; // Suppress accidental palm tap
-            }
-          } else if (_lastPointerDeviceKind == PointerDeviceKind.stylus ||
+            return true; // Suppress touch word selection, double-tap, long-press, context menus
+          }
+          if (_lastPointerDeviceKind == PointerDeviceKind.stylus ||
               _lastPointerDeviceKind == PointerDeviceKind.invertedStylus) {
             if (details.type == PdfViewerGeneralTapType.longPress) {
               _handleSecondaryClick(details.localPosition, isTouch: true);
@@ -2566,17 +2600,29 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                       event.kind == PointerDeviceKind.invertedStylus;
                   final isTouch = event.kind == PointerDeviceKind.touch;
 
-                  // Palm rejection check for touch events in stylus mode
-                  if (isTouch && _isPalmRejectionActive(settings.isStylusMode)) {
-                    return; // Ignore palm touch
-                  }
-
                   if (isStylus) {
+                    _currentInteractionDeviceKind = PointerDeviceKind.stylus;
                     _isStylusContacting = true;
                     _lastStylusContactTime = DateTime.now();
+                    _pdfController.stopInteractiveViewerAnimation();
                     if (_pdfController.isReady) {
                       _stylusInteractionStartMatrix = _pdfController.value.clone();
                     }
+                  } else if (isTouch) {
+                    _currentInteractionDeviceKind = PointerDeviceKind.touch;
+                    _stylusInteractionStartMatrix = null;
+                    if (_isPalmRejectionActive(settings.isStylusMode)) {
+                      return; // Ignore palm touch
+                    }
+                    if (settings.isStylusMode) {
+                      // In stylus mode, touch should clear any pending selection immediately
+                      if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
+                        _pdfController.textSelectionDelegate.clearTextSelection();
+                      }
+                    }
+                  } else {
+                    _currentInteractionDeviceKind = event.kind;
+                    _stylusInteractionStartMatrix = null;
                   }
 
                   if (_arbitraryMenuState != null) {
@@ -2631,8 +2677,17 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                 onPointerMove: (event) {
                   final isStylus = event.kind == PointerDeviceKind.stylus ||
                       event.kind == PointerDeviceKind.invertedStylus;
+                  final isTouch = event.kind == PointerDeviceKind.touch;
                   if (isStylus) {
                     _lastStylusContactTime = DateTime.now();
+                    if (_pdfController.isReady && _stylusInteractionStartMatrix != null) {
+                      _pdfController.stopInteractiveViewerAnimation();
+                      _pdfController.value = _stylusInteractionStartMatrix!;
+                    }
+                  } else if (isTouch && settings.isStylusMode) {
+                    if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
+                      _pdfController.textSelectionDelegate.clearTextSelection();
+                    }
                   }
                   if ((event.position - _pointerDownGlobalPosition).distance > 10) {
                     _touchLongPressTimer?.cancel();
@@ -2645,6 +2700,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   if (isStylus) {
                     _isStylusContacting = false;
                     _lastStylusContactTime = DateTime.now();
+                    _pdfController.stopInteractiveViewerAnimation();
+                    if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
+                      _pdfController.value = _stylusInteractionStartMatrix!;
+                    }
                   }
                   _touchLongPressTimer?.cancel();
                   _stylusLongPressTimer?.cancel();
@@ -2658,6 +2717,17 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                     _isStylusContacting = false;
                     _lastStylusContactTime = DateTime.now();
                     _stylusLongPressTimer?.cancel();
+                    _pdfController.stopInteractiveViewerAnimation();
+                    if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
+                      _pdfController.value = _stylusInteractionStartMatrix!;
+                    }
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!mounted) return;
+                      _pdfController.stopInteractiveViewerAnimation();
+                      if (_stylusInteractionStartMatrix != null && _pdfController.isReady) {
+                        _pdfController.value = _stylusInteractionStartMatrix!;
+                      }
+                    });
                   }
                   _touchLongPressTimer?.cancel();
 
@@ -2667,6 +2737,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
                   // In stylus mode, finger touch should never trigger text selection floating bar
                   if (settings.isStylusMode && isTouch) {
+                    if (_pdfController.isReady && _pdfController.textSelectionDelegate.hasSelectedText) {
+                      _pdfController.textSelectionDelegate.clearTextSelection();
+                    }
                     return;
                   }
 

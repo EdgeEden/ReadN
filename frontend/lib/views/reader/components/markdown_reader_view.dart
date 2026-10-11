@@ -116,6 +116,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
   // Stylus & Palm Rejection state
   bool _isStylusContacting = false;
   DateTime? _lastStylusContactTime;
+  PointerDeviceKind? _lastPointerDeviceKind;
 
   bool _isPalmRejectionActive(bool isStylusMode) {
     if (!isStylusMode) return false;
@@ -1270,6 +1271,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                   child: Listener(
                     behavior: HitTestBehavior.translucent,
                     onPointerDown: (event) {
+                      _lastPointerDeviceKind = event.kind;
                       final isStylus = event.kind == PointerDeviceKind.stylus ||
                           event.kind == PointerDeviceKind.invertedStylus;
                       final isTouch = event.kind == PointerDeviceKind.touch;
@@ -1437,6 +1439,7 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
   }) {
     final cardKey = _cardKeys.putIfAbsent(chunk.pageNumber, () => GlobalKey());
     final isMobile = MediaQuery.sizeOf(context).width < 700;
+    final settings = context.watch<ReaderSettingsProvider>();
     final annoProvider = context.watch<AnnotationProvider>();
     final allDocAnnos = annoProvider.annotations;
 
@@ -1772,6 +1775,11 @@ class MarkdownReaderViewState extends State<MarkdownReaderView> {
                 padding: EdgeInsets.symmetric(horizontal: isMobile ? 14 : 28, vertical: isMobile ? 16 : 22),
                 child: SelectionArea(
                   onSelectionChanged: (SelectedContent? content) {
+                    if (settings.isStylusMode &&
+                        (_lastPointerDeviceKind == PointerDeviceKind.touch || _isPalmRejectionActive(true))) {
+                      _pendingSelectionText = '';
+                      return;
+                    }
                     final selText = content?.plainText.trim() ?? '';
                     if (selText.isNotEmpty) {
                       _pendingSelectionText = selText;
